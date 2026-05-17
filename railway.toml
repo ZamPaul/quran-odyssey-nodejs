@@ -1,5 +1,6 @@
 [deploy]
-startCommand = "npm run migrate:prod && npm start"
+preDeployCommand = "npm run migrate:prod"
+startCommand = "npm start"
 healthcheckPath = "/health"
 healthcheckTimeout = 60
 restartPolicyType = "ON_FAILURE"
