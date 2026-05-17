@@ -1,8 +1,8 @@
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const morgan = require('morgan');
+import 'dotenv/config';
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import morgan from 'morgan';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -37,9 +37,12 @@ app.get('/health', (req, res) => {
 
 // ─── Routes ───────────────────────────────
 // Uncomment as you build each phase
-// app.use('/webhooks', require('./routes/webhooks'));
-// app.use('/api/students', require('./routes/students'));
-// app.use('/api/booking', require('./routes/booking'));
+// import webhooksRouter from './routes/webhooks.js';
+// import studentsRouter from './routes/students.js';
+// import bookingRouter from './routes/booking.js';
+// app.use('/webhooks', webhooksRouter);
+// app.use('/api/students', studentsRouter);
+// app.use('/api/booking', bookingRouter);
 
 // ─── Error Handler ────────────────────────
 app.use((err, req, res, next) => {
