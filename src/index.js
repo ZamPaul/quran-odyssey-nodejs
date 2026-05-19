@@ -16,8 +16,7 @@ app.use(morgan('dev'));
 app.use(cors({
   origin: [
     'http://localhost:3000',
-    'https://quranodyssey.com',  
-    
+    'https://quranodyssey.com',
     // production domain
     process.env.FRONTEND_URL,             // set on Railway
   ].filter(Boolean),

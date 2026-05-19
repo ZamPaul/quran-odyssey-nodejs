@@ -6,3 +6,94 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+model User {
+  id             String          @id @default(cuid())
+  clerkId        String          @unique
+  email          String          @unique
+  role           Role            @default(STUDENT)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  studentProfile StudentProfile?
+  trialBookings  TrialBooking[]
+
+  @@map("users")
+}
+
+model StudentProfile {
+  id             String         @id @default(cuid())
+  userId         String         @unique
+  parentName     String
+  phone          String?
+  childName      String
+  childAge       Int
+  country        String
+  timezone       String
+  courseInterest CourseInterest
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("student_profiles")
+}
+
+model Teacher {
+  id            String         @id @default(cuid())
+  name          String
+  email         String         @unique
+  specialty     String[]
+  timezone      String
+  gender        String
+  bio           String?
+  rating        Float          @default(0.0)
+  isActive      Boolean        @default(true)
+  calendarId    String         @unique
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  trialBookings TrialBooking[]
+
+  @@map("teachers")
+}
+
+model TrialBooking {
+  id              String        @id @default(cuid())
+  studentId       String
+  teacherId       String
+  slotStart       DateTime
+  slotEnd         DateTime
+  status          BookingStatus @default(PENDING)
+  zoomLink        String?
+  calEventId      String?
+  emailSent       Boolean       @default(false)
+  whatsappSent    Boolean       @default(false)
+  studentTimezone String
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  student         User          @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  teacher         Teacher       @relation(fields: [teacherId], references: [id])
+
+  @@unique([teacherId, slotStart])
+  @@map("trial_bookings")
+}
+
+enum Role {
+  STUDENT
+  TEACHER
+  ADMIN
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+}
+
+enum CourseInterest {
+  NOORANI_QAIDA
+  QURAN_RECITATION
+  TAJWEED
+  HIFZ
+  ISLAMIC_STUDIES
+  ONE_TO_ONE
+}
