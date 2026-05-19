@@ -4,6 +4,9 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 
+// Routes
+import webhooksRouter from './routes/webhooks.js';
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -35,14 +38,13 @@ app.get('/health', (req, res) => {
 });
 
 // ─── Routes ───────────────────────────────
+app.use('/webhooks', webhooksRouter);
 // Uncomment as you build each phase
-// import webhooksRouter from './routes/webhooks.js';
 // import studentsRouter from './routes/students.js';
 // import bookingRouter from './routes/booking.js';
-// app.use('/webhooks', webhooksRouter);
+
 // app.use('/api/students', studentsRouter);
 // app.use('/api/booking', bookingRouter);
-
 // ─── Error Handler ────────────────────────
 app.use((err, req, res, next) => {
   console.error(err.stack);

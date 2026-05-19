@@ -17,6 +17,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@clerk/backend": "^3.4.11",
     "@prisma/adapter-pg": "^7.8.0",
     "@prisma/client": "^7.8.0",
     "cors": "^2.8.6",
@@ -25,7 +26,8 @@
     "helmet": "^8.1.0",
     "morgan": "^1.10.1",
     "pg": "^8.21.0",
-    "prisma": "^7.8.0"
+    "prisma": "^7.8.0",
+    "svix": "^1.94.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"
