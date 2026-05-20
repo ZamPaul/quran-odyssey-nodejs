@@ -48,10 +48,10 @@ router.post("/clerk", async (req, res) => {
       const user = await prisma.user.create({
         data: {
           clerkId: data.id,
-          email: email,
+          email: email,      
           role: "STUDENT",
         },
-      });
+      });  
       console.log(`✅ User created in DB: ${user.email} (${user.id})`);
     } catch (err) {
       // P2002 = unique constraint violation — user already exists
