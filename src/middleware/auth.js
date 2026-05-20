@@ -1,5 +1,7 @@
 // src/middleware/auth.js
+import "dotenv/config";
 import { createClerkClient } from "@clerk/backend";
+import { verifyToken } from "@clerk/backend";
 import { prisma } from "../lib/prisma.js";
 
 const clerk = createClerkClient({
@@ -17,7 +19,10 @@ export const requireAuth = async (req, res, next) => {
 
   try {
     // Verify the JWT Clerk issued to this user
-    const payload = await clerk.verifyToken(token);
+    const payload = await verifyToken(token, {
+      jwtKey: process.env.CLERK_SECRET_KEY,
+      authorizedParties: ["https://localhost:3000", process.env.FRONTEND_URL],
+    });
 
     // payload.sub is the Clerk user ID (e.g. "user_2abc...")
     req.auth = { clerkId: payload.sub };
