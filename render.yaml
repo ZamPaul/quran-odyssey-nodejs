@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: quran-odyssey-backend
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    preDeployCommand: npm run migrate:prod
+    envVars:
+      - key: NODE_ENV
+        value: production
