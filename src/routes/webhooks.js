@@ -39,12 +39,6 @@ router.post("/clerk", async (req, res) => {
   if (type === "user.created") {
     const email = data?.email_addresses?.[0]?.email_address;
 
-    console.log("data for user creation(not parsed idk): ", data);
-
-    console.log("email: ", email)
-    console.log("clerk id: ", data.id)
-    // console.log(data.json());
-
     if (!email) {
       console.error("No email found on user.created event");
       return res.status(400).json({ error: "No email on user" });
@@ -73,7 +67,7 @@ router.post("/clerk", async (req, res) => {
 
   // ─── user.updated ──────────────────────────────────
   if (type === "user.updated") {
-    const email = data.email_addresses?.[0]?.email_address;
+    const email = data?.email_addresses?.[0]?.email_address;
 
     if (email) {
       try {
