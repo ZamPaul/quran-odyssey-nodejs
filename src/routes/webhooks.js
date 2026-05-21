@@ -47,8 +47,8 @@ router.post("/clerk", async (req, res) => {
     try {
       const user = await prisma.user.create({
         data: {
-          clerkId: data.id,
-          email: email,      
+          clerkId: toString(data.id),
+          email: toString(email),      
           role: "STUDENT",
         },
       });  
