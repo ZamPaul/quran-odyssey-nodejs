@@ -36,6 +36,15 @@ async function main() {
     },
   });
 
+  await prisma.user.create({
+    data: {
+      clerkId: "user_testclerkid_123",
+      email: "sample.student@quranodyssey.com",
+      role: "STUDENT",
+      // No studentProfile or trialBookings to keep it simple for sample
+    },
+  });
+
   console.log("✅ Seed complete — 2 teachers created");
 }
 

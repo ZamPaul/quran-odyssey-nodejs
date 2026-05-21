@@ -37,7 +37,13 @@ router.post("/clerk", async (req, res) => {
 
   // ─── user.created ──────────────────────────────────
   if (type === "user.created") {
-    const email = data.email_addresses?.[0]?.email_address;
+    const email = data?.email_addresses?.[0]?.email_address;
+
+    console.log("data for user creation(not parsed idk): ", data);
+
+    console.log("email: ", email)
+    console.log("clerk id: ", data.id)
+    // console.log(data.json());
 
     if (!email) {
       console.error("No email found on user.created event");
@@ -47,8 +53,8 @@ router.post("/clerk", async (req, res) => {
     try {
       const user = await prisma.user.create({
         data: {
-          clerkId: toString(data.id),
-          email: toString(email),      
+          clerkId: data.id,
+          email: email,      
           role: "STUDENT",
         },
       });  
