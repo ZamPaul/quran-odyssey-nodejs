@@ -29,6 +29,7 @@
     "morgan": "^1.10.1",
     "pg": "^8.21.0",
     "prisma": "^7.8.0",
+    "resend": "^6.12.3",
     "svix": "^1.94.0"
   },
   "devDependencies": {
