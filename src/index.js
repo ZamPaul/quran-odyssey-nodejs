@@ -7,6 +7,7 @@ import morgan from 'morgan';
 // Routessss
 import webhooksRouter from './routes/webhooks.js';
 import studentsRouter from './routes/students.js'
+import bookingRouter  from './routes/booking.js'; 
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -41,11 +42,10 @@ app.get('/health', (req, res) => {
 
 // ─── Routes ───────────────────────────────
 app.use('/webhooks', webhooksRouter);
-app.use('/api/students', studentsRouter);  // add this
+app.use('/api/students', studentsRouter);
+app.use('/api/booking', bookingRouter); 
 // Uncomment as you build each phase
-// import bookingRouter from './routes/booking.js';
 
-// app.use('/api/booking', bookingRouter);
 // ─── Error Handler ────────────────────────
 app.use((err, req, res, next) => {
   console.log("Error handler working: ")
