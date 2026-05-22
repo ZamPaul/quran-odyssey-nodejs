@@ -21,7 +21,12 @@ export const requireAuth = async (req, res, next) => {
     // Verify the JWT Clerk issued to this user
     const payload = await verifyToken(token, {
       jwtKey: process.env.CLERK_SECRET_KEY,
-      authorizedParties: ["https://localhost:3000", process.env.FRONTEND_URL],
+      authorizedParties: [
+        "http://localhost:3000",
+        "https://quran-odyssey-nextjs.vercel.app",
+        'https://quranodyssey.com',
+        process.env.FRONTEND_URL,
+      ],
     });
 
     // payload.sub is the Clerk user ID (e.g. "user_2abc...")
@@ -38,8 +43,10 @@ export const requireAuth = async (req, res, next) => {
     }
 
     req.user = dbUser;
+    console.log("Verified with Auth Middleware");
     next();
   } catch (err) {
+    console.log("error: ", err);
     console.error("Auth middleware error:", err.message);
     return res.status(401).json({ error: "Invalid or expired token" });
   }

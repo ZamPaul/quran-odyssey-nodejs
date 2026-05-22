@@ -21,7 +21,7 @@ app.use(cors({
   origin: [
     'http://localhost:3000',
     'https://quranodyssey.com',
-    'https://quran-odyssey-nextjs.vercel.app/',
+    'https://quran-odyssey-nextjs.vercel.app',
     // production domain
     process.env.FRONTEND_URL,             // set on Railway
   ].filter(Boolean),
@@ -45,7 +45,6 @@ app.use('/api/students', studentsRouter);  // add this
 // Uncomment as you build each phase
 // import bookingRouter from './routes/booking.js';
 
-// app.use('/api/students', studentsRouter);
 // app.use('/api/booking', bookingRouter);
 // ─── Error Handler ────────────────────────
 app.use((err, req, res, next) => {

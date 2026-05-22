@@ -19,6 +19,9 @@ router.post("/profile", requireAuth, async (req, res) => {
     phone,
   } = req.body;
 
+  console.log("post request received at this route");
+  console.log("req body:", req.body);
+
   // Validate required fields
   const missing = [];
   if (!parentName) missing.push("parentName");
@@ -91,6 +94,7 @@ router.post("/profile", requireAuth, async (req, res) => {
 // Returns the current user + their profile
 // Used by the frontend to check if profile exists
 router.get("/profile", requireAuth, async (req, res) => {
+  console.log("GET request at student apis profile");
   return res.json({
     user: {
       id: req.user.id,
