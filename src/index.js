@@ -48,6 +48,7 @@ app.use('/api/students', studentsRouter);  // add this
 // app.use('/api/booking', bookingRouter);
 // ─── Error Handler ────────────────────────
 app.use((err, req, res, next) => {
+  console.log("Error handler working: ")
   console.error(err.stack);
   res.status(err.status || 500).json({
     error: err.message || 'Internal server error',

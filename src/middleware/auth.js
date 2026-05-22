@@ -11,22 +11,19 @@ const clerk = createClerkClient({
 export const requireAuth = async (req, res, next) => {
   const authHeader = req.headers.authorization;
 
+  // console.log("CLERK SECRET KEY EXISTS:", process.env.CLERK_SECRET_KEY);
+
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return res.status(401).json({ error: "No authorization token provided" });
   }
 
   const token = authHeader.split(" ")[1];
+  console.log("token: ", token)
 
   try {
     // Verify the JWT Clerk issued to this user
     const payload = await verifyToken(token, {
-      jwtKey: process.env.CLERK_SECRET_KEY,
-      authorizedParties: [
-        "http://localhost:3000",
-        "https://quran-odyssey-nextjs.vercel.app",
-        'https://quranodyssey.com',
-        process.env.FRONTEND_URL,
-      ],
+      secretKey: process.env.CLERK_SECRET_KEY
     });
 
     // payload.sub is the Clerk user ID (e.g. "user_2abc...")
