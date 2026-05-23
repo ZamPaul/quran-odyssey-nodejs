@@ -156,7 +156,6 @@ function trialBookingTemplate({
 }
 
 // ─── Send Functions ────────────────────────────────────────
-
 export async function sendTrialBookingConfirmation({
   to,
   parentName,

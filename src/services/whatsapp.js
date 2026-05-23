@@ -1,90 +1,92 @@
 // src/services/whatsapp.js
-// Trial booking WhatsApp notification (Meta Cloud API when configured)
+import axios from 'axios';
 
-function formatSlotLocal(slotStart, studentTimezone) {
-  const start = new Date(slotStart);
-  const dateDisplay = start.toLocaleDateString("en-GB", {
-    timeZone: studentTimezone,
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-  });
-  const timeDisplay = start.toLocaleTimeString("en-GB", {
-    timeZone: studentTimezone,
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZoneName: "short",
-  });
-  return `${dateDisplay} at ${timeDisplay}`;
+const BASE_URL = 'https://graph.facebook.com/v19.0';
+
+// ─── Format phone for WhatsApp API ────────────────────────
+// Input:  "+447911123456" or "447911123456" or "07911123456"
+// Output: "447911123456" (E.164 without the + sign)
+function formatPhone(phone) {
+  if (!phone) return null;
+
+  // Strip everything except digits
+  const digits = phone.replace(/\D/g, '');
+
+  // UK numbers starting with 07 → replace with 447
+  if (digits.startsWith('07') && digits.length === 11) {
+    return '44' + digits.slice(1);
+  }
+
+  return digits;
 }
 
+// ─── Send trial booking confirmation ──────────────────────
 export async function sendTrialBookingWhatsApp({
-  to,
+  phone,
   parentName,
   childName,
   teacherName,
+  dateDisplay,    // "Wednesday, 28 May 2026"
+  timeDisplay,    // "6:00 PM – 6:30 PM (BST)"
   courseLabel,
-  slotStart,
-  studentTimezone,
-  bookingId,
 }) {
-  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+  const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const ACCESS_TOKEN    = process.env.WHATSAPP_ACCESS_TOKEN;
 
-  if (!phoneNumberId || !accessToken) {
-    console.log("[WhatsApp] Skipped — WHATSAPP_PHONE_NUMBER_ID or WHATSAPP_ACCESS_TOKEN not set");
-    return { success: false, skipped: true };
+  if (!PHONE_NUMBER_ID || !ACCESS_TOKEN) {
+    console.error('WhatsApp env vars not configured');
+    return { success: false, error: 'WhatsApp not configured' };
   }
 
-  if (!to) {
-    console.log("[WhatsApp] Skipped — no phone number on student profile");
-    return { success: false, skipped: true };
+  const formattedPhone = formatPhone(phone);
+
+  if (!formattedPhone) {
+    console.warn('No valid phone number for WhatsApp — skipping');
+    return { success: false, error: 'No phone number' };
   }
 
-  const when = formatSlotLocal(slotStart, studentTimezone);
-  const ref = bookingId.toUpperCase().slice(-8);
-  const digits = String(to).replace(/\D/g, "");
+  const url = `${BASE_URL}/${PHONE_NUMBER_ID}/messages`;
 
-  const body = [
-    `Assalamu alaikum ${parentName}!`,
-    "",
-    `${childName}'s free trial (${courseLabel}) is confirmed.`,
-    `Teacher: ${teacherName}`,
-    `When: ${when}`,
-    `Ref: ${ref}`,
-    "",
-    "Quran Odyssey",
-  ].join("\n");
+  const payload = {
+    messaging_product: 'whatsapp',
+    to:                formattedPhone,
+    type:              'template',
+    template: {
+      name:     'trial_booking_confirmation',
+      language: { code: 'en' },
+      components: [
+        {
+          type:       'body',
+          parameters: [
+            { type: 'text', text: parentName   },  // {{1}}
+            { type: 'text', text: childName    },  // {{2}}
+            { type: 'text', text: teacherName  },  // {{3}}
+            { type: 'text', text: courseLabel  },  // {{4}}
+            { type: 'text', text: dateDisplay  },  // {{5}}
+            { type: 'text', text: timeDisplay  },  // {{6}}
+          ],
+        },
+      ],
+    },
+  };
 
   try {
-    const res = await fetch(
-      `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          messaging_product: "whatsapp",
-          to: digits,
-          type: "text",
-          text: { body },
-        }),
+    const response = await axios.post(url, payload, {
+      headers: {
+        'Authorization': `Bearer ${ACCESS_TOKEN}`,
+        'Content-Type':  'application/json',
       },
-    );
+    });
 
-    const data = await res.json().catch(() => ({}));
-
-    if (!res.ok) {
-      console.error("[WhatsApp] API error:", data);
-      return { success: false, error: data };
-    }
-
-    console.log(`✅ WhatsApp sent to ${digits}`);
-    return { success: true, messageId: data.messages?.[0]?.id };
+    console.log(`✅ WhatsApp message sent to ${formattedPhone} — ID: ${response.data.messages?.[0]?.id}`);
+    return { success: true, messageId: response.data.messages?.[0]?.id };
   } catch (err) {
-    console.error("[WhatsApp] Send failed:", err.message);
-    return { success: false, error: err.message };
+    const errorData = err.response?.data?.error;
+    console.error('❌ WhatsApp send failed:', errorData || err.message);
+    return {
+      success: false,
+      error:   errorData?.message || err.message,
+      code:    errorData?.code,
+    };
   }
 }
