@@ -8,6 +8,7 @@ import morgan from 'morgan';
 import webhooksRouter from './routes/webhooks.js';
 import studentsRouter from './routes/students.js'
 import bookingRouter  from './routes/booking.js'; 
+import leadsRouter from './routes/leads.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -44,6 +45,8 @@ app.get('/health', (req, res) => {
 app.use('/webhooks', webhooksRouter);
 app.use('/api/students', studentsRouter);
 app.use('/api/booking', bookingRouter); 
+// Add after existing routes
+app.use('/api/leads', leadsRouter);
 // Uncomment as you build each phase
 
 // ─── Error Handler ────────────────────────

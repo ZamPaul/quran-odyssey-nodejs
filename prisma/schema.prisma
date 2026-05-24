@@ -76,6 +76,30 @@ model TrialBooking {
   @@map("trial_bookings")
 }
 
+enum LeadStatus {
+  NEW
+  CONTACTED
+  BOOKED
+  CONVERTED
+  LOST
+}
+
+model TrialLead {
+  id           String     @id @default(cuid())
+  firstName    String
+  lastName     String
+  email        String
+  phone        String
+  isInterested Boolean    @default(true)
+  source       String     @default("landing_page")
+  status       LeadStatus @default(NEW)
+  notes        String?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@map("trial_leads")
+}
+
 enum Role {
   STUDENT
   TEACHER

@@ -228,3 +228,180 @@ export async function sendTrialBookingConfirmation({
     return { success: false, error: err.message };
   }
 }
+
+
+// ─── Lead confirmation email ───────────────────────────────
+export async function sendLeadConfirmationEmail({ to, firstName }) {
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/></head>
+<body style="margin:0;padding:0;background:#f7f9fb;font-family:'Segoe UI',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="padding:40px 20px;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;">
+
+        <tr>
+          <td style="background:#0d2840;border-radius:16px 16px 0 0;padding:32px 40px;text-align:center;">
+            <div style="font-size:22px;font-weight:800;color:#fff;">
+              Quran <span style="color:#28b7d9;">Odyssey</span>
+            </div>
+          </td>
+        </tr>
+
+        <tr>
+          <td style="background:#28b7d9;padding:16px 40px;text-align:center;">
+            <div style="font-size:13px;font-weight:700;color:rgba(255,255,255,0.9);text-transform:uppercase;letter-spacing:0.8px;">
+              ✓ &nbsp; We've received your request
+            </div>
+          </td>
+        </tr>
+
+        <tr>
+          <td style="background:#fff;padding:40px;border:1px solid #e2e8f0;border-top:none;">
+            <p style="font-size:16px;font-weight:700;color:#0f172a;margin:0 0 12px;">
+              Assalamu Alaikum, ${firstName}! 👋
+            </p>
+            <p style="font-size:14px;color:#64748b;line-height:1.75;margin:0 0 24px;">
+              Thank you for your interest in Quran Odyssey. We've received your request and one of our team members will be in touch within <strong style="color:#0f172a;">2 hours</strong> to arrange your child's free trial class.
+            </p>
+
+            <table width="100%" cellpadding="0" cellspacing="0" style="background:#f7f9fb;border-radius:12px;border:1px solid #e2e8f0;margin-bottom:24px;">
+              <tr><td style="padding:20px 24px;">
+                <div style="font-size:13px;font-weight:700;color:#0f172a;margin-bottom:12px;">What to expect:</div>
+                <table cellpadding="0" cellspacing="0">
+                  ${[
+                    ['📞', 'We contact you on WhatsApp or email to confirm a time'],
+                    ['👩‍🏫', 'We match your child with the right teacher for their level'],
+                    ['🎓', '30-minute free trial class — no commitment required'],
+                    ['📊', 'Teacher recommends the right course and starting point'],
+                  ].map(([icon, text]) => `
+                  <tr>
+                    <td style="padding:6px 12px 6px 0;font-size:16px;vertical-align:top;">${icon}</td>
+                    <td style="padding:6px 0;font-size:13px;color:#64748b;line-height:1.6;">${text}</td>
+                  </tr>`).join('')}
+                </table>
+              </td></tr>
+            </table>
+
+            <table width="100%" cellpadding="0" cellspacing="0" style="background:#e8f8fc;border-radius:10px;border:1px solid rgba(40,183,217,0.25);margin-bottom:24px;">
+              <tr><td style="padding:16px 20px;">
+                <p style="font-size:13px;color:#0e6e8a;margin:0;line-height:1.6;">
+                  <strong>Need to reach us sooner?</strong> Message us directly on WhatsApp for the fastest response.
+                </p>
+              </td></tr>
+            </table>
+
+            <p style="font-size:14px;color:#64748b;margin:0;">
+              Jazakallah Khayran,<br/>
+              <strong style="color:#0f172a;">The Quran Odyssey Team</strong>
+            </p>
+          </td>
+        </tr>
+
+        <tr>
+          <td style="background:#f7f9fb;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 16px 16px;padding:20px 40px;text-align:center;">
+            <p style="font-size:11px;color:#cbd5e1;margin:0;">
+              Quran Odyssey · UK · USA · Canada · quranodyssey.com
+            </p>
+          </td>
+        </tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
+  `.trim();
+
+  try {
+    const { data, error } = await resend.emails.send({
+      from:    'Quran Odyssey <bookings@quranodyssey.com>',
+      to:      [to],
+      subject: "We've received your request — Quran Odyssey",
+      html,
+    });
+
+    if (error) {
+      console.error('Lead confirmation email error:', error);
+      return { success: false };
+    }
+
+    console.log(`✅ Lead confirmation sent to ${to}`);
+    return { success: true };
+  } catch (err) {
+    console.error('Lead confirmation email failed:', err.message);
+    return { success: false };
+  }
+}
+
+// ─── Admin notification email ──────────────────────────────
+export async function sendAdminLeadNotification({ firstName, lastName, email, phone, leadId }) {
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"/></head>
+<body style="margin:0;padding:0;background:#f7f9fb;font-family:'Segoe UI',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="padding:40px 20px;">
+    <tr><td align="center">
+      <table width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%;">
+
+        <tr>
+          <td style="background:#0d2840;border-radius:14px 14px 0 0;padding:24px 32px;">
+            <div style="font-size:16px;font-weight:800;color:white;">
+              🔔 New Trial Lead
+            </div>
+            <div style="font-size:12px;color:rgba(255,255,255,0.4);margin-top:4px;">
+              Submitted via landing page · ${new Date().toLocaleString('en-GB')}
+            </div>
+          </td>
+        </tr>
+
+        <tr>
+          <td style="background:white;padding:28px 32px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 14px 14px;">
+            ${[
+              ['Name',  `${firstName} ${lastName}`],
+              ['Email', email],
+              ['Phone', phone],
+              ['Lead ID', leadId.slice(-8).toUpperCase()],
+            ].map(([label, value]) => `
+            <div style="display:flex;justify-content:space-between;padding:12px 0;border-bottom:1px solid #f0f4f8;">
+              <span style="font-size:12px;color:#94a3b8;font-weight:600;">${label}</span>
+              <span style="font-size:13px;color:#0f172a;font-weight:700;">${value}</span>
+            </div>`).join('')}
+
+            <div style="margin-top:20px;padding:14px 16px;background:#e8f8fc;border-radius:8px;border:1px solid rgba(40,183,217,0.2);">
+              <div style="font-size:12px;font-weight:700;color:#0e6e8a;">Action needed:</div>
+              <div style="font-size:12px;color:#0e6e8a;margin-top:4px;line-height:1.6;">
+                Contact this lead within 2 hours via WhatsApp or email to arrange their trial class.
+              </div>
+            </div>
+          </td>
+        </tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
+  `.trim();
+
+  try {
+    const { data, error } = await resend.emails.send({
+      from:    'Quran Odyssey System <bookings@quranodyssey.com>',
+      to:      ['info@quranodyssey.com', 'zamielpaul@gmail.com'],
+      subject: `🔔 New Trial Lead: ${firstName} ${lastName}`,
+      html,
+    });
+
+    if (error) {
+      console.error('Admin notification email error:', error);
+      return { success: false };
+    }
+
+    return { success: true };
+  } catch (err) {
+    console.error('Admin notification failed:', err.message);
+    return { success: false };
+  }
+}

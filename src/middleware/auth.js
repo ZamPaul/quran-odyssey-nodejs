@@ -27,6 +27,7 @@ export const requireAuth = async (req, res, next) => {
     });
 
     // payload.sub is the Clerk user ID (e.g. "user_2abc...")
+    console.log(payload.sub);
     req.auth = { clerkId: payload.sub };
 
     // Attach our DB user to the request so routes don't re-query
@@ -36,6 +37,7 @@ export const requireAuth = async (req, res, next) => {
     });
 
     if (!dbUser) {
+      console.log("user not found");
       return res.status(401).json({ error: "User not found in database" });
     }
 
