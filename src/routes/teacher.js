@@ -510,4 +510,354 @@ router.get('/students/:id', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────
+// ASSIGNMENTS
+// ─────────────────────────────────────────────────────────
+
+// GET /api/teacher/assignments
+// All assignments for this teacher
+// Query: ?status= ?studentId= ?courseType=
+router.get('/assignments', async (req, res) => {
+  const { status, studentId, courseType } = req.query;
+
+  const validStatuses = ['PENDING', 'SUBMITTED', 'GRADED', 'OVERDUE'];
+  if (status && !validStatuses.includes(status)) {
+    return res.status(400).json({
+      error: `Invalid status. Must be one of: ${validStatuses.join(', ')}`,
+    });
+  }
+
+  const where = { teacherId: req.teacher.id };
+  if (status)     where.status     = status;
+  if (studentId)  where.studentId  = studentId;
+  if (courseType) where.courseType = courseType;
+
+  try {
+    const assignments = await prisma.assignment.findMany({
+      where,
+      include: {
+        student: {
+          select: {
+            id:    true,
+            email: true,
+            studentProfile: {
+              select: { childName: true, parentName: true },
+            },
+          },
+        },
+        submission: true,
+      },
+      orderBy: { dueDate: 'asc' },
+    });
+
+    // Mark overdue assignments — dueDate passed and still PENDING
+    const now = new Date();
+    const withOverdue = assignments.map(a => ({
+      ...a,
+      isOverdue: a.status === 'PENDING' && new Date(a.dueDate) < now,
+    }));
+
+    return res.json({ assignments: withOverdue, count: assignments.length });
+  } catch (err) {
+    console.error('Assignments fetch failed:', err);
+    return res.status(500).json({ error: 'Failed to fetch assignments' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// GET /api/teacher/assignments/:id
+// Single assignment with submission
+// ─────────────────────────────────────────────────────────
+router.get('/assignments/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const assignment = await prisma.assignment.findUnique({
+      where: { id },
+      include: {
+        student: {
+          select: {
+            id:    true,
+            email: true,
+            studentProfile: {
+              select: { childName: true, parentName: true, timezone: true },
+            },
+          },
+        },
+        enrollment: {
+          select: { id: true, courseType: true, status: true },
+        },
+        submission: true,
+      },
+    });
+
+    if (!assignment || assignment.teacherId !== req.teacher.id) {
+      return res.status(404).json({ error: 'Assignment not found' });
+    }
+
+    return res.json({ assignment });
+  } catch (err) {
+    console.error('Assignment fetch failed:', err);
+    return res.status(500).json({ error: 'Failed to fetch assignment' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// POST /api/teacher/assignments
+// Create a new assignment for a student
+// ─────────────────────────────────────────────────────────
+router.post('/assignments', async (req, res) => {
+  const {
+    studentId,
+    enrollmentId,
+    title,
+    description,
+    dueDate,
+    courseType,
+  } = req.body;
+
+  // Validation
+  const errors = [];
+  if (!studentId)  errors.push('studentId is required');
+  if (!title)      errors.push('title is required');
+  if (!dueDate)    errors.push('dueDate is required');
+  if (!courseType) errors.push('courseType is required');
+
+  if (errors.length > 0) {
+    return res.status(400).json({ error: 'Validation failed', details: errors });
+  }
+
+  // Validate dueDate is in the future
+  const due = new Date(dueDate);
+  if (isNaN(due.getTime())) {
+    return res.status(400).json({ error: 'Invalid dueDate format' });
+  }
+  if (due < new Date()) {
+    return res.status(400).json({ error: 'dueDate must be in the future' });
+  }
+
+  try {
+    // Verify the student is enrolled with this teacher
+    const enrollment = await prisma.enrollment.findFirst({
+      where: {
+        teacherId: req.teacher.id,
+        studentId,
+        status: 'ACTIVE',
+      },
+    });
+
+    if (!enrollment) {
+      return res.status(404).json({
+        error: 'Student not found or not actively enrolled with you',
+      });
+    }
+
+    const assignment = await prisma.assignment.create({
+      data: {
+        teacherId:    req.teacher.id,
+        studentId,
+        enrollmentId: enrollmentId || enrollment.id,
+        title:        title.trim(),
+        description:  description?.trim() || null,
+        dueDate:      due,
+        courseType,
+        status:       'PENDING',
+      },
+      include: {
+        student: {
+          select: {
+            id:    true,
+            email: true,
+            studentProfile: {
+              select: { childName: true, parentName: true },
+            },
+          },
+        },
+        submission: true,
+      },
+    });
+
+    console.log(`✅ Assignment created: "${assignment.title}" for student ${studentId}`);
+    return res.status(201).json({ assignment });
+  } catch (err) {
+    console.error('Assignment creation failed:', err);
+    return res.status(500).json({ error: 'Failed to create assignment' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// PATCH /api/teacher/assignments/:id
+// Update assignment: title, description, dueDate, status
+// Teachers can edit anything except the submission itself
+// ─────────────────────────────────────────────────────────
+router.patch('/assignments/:id', async (req, res) => {
+  const { id } = req.params;
+  const { title, description, dueDate, status } = req.body;
+
+  if (!title && !description && !dueDate && !status) {
+    return res.status(400).json({
+      error: 'Provide at least one field to update',
+    });
+  }
+
+  const validStatuses = ['PENDING', 'OVERDUE'];
+  if (status && !validStatuses.includes(status)) {
+    return res.status(400).json({
+      error: `Teachers can only set status to PENDING or OVERDUE. Got: ${status}`,
+    });
+  }
+
+  try {
+    const existing = await prisma.assignment.findUnique({ where: { id } });
+
+    if (!existing || existing.teacherId !== req.teacher.id) {
+      return res.status(404).json({ error: 'Assignment not found' });
+    }
+
+    const updateData = {};
+    if (title !== undefined)       updateData.title       = title.trim();
+    if (description !== undefined) updateData.description = description?.trim() || null;
+    if (status !== undefined)      updateData.status      = status;
+    if (dueDate !== undefined) {
+      const due = new Date(dueDate);
+      if (isNaN(due.getTime())) {
+        return res.status(400).json({ error: 'Invalid dueDate format' });
+      }
+      updateData.dueDate = due;
+    }
+
+    const updated = await prisma.assignment.update({
+      where:   { id },
+      data:    updateData,
+      include: { student: { select: { id: true, email: true, studentProfile: { select: { childName: true } } } }, submission: true },
+    });
+
+    return res.json({ assignment: updated });
+  } catch (err) {
+    console.error('Assignment update failed:', err);
+    return res.status(500).json({ error: 'Failed to update assignment' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// DELETE /api/teacher/assignments/:id
+// Delete an assignment (only if not yet submitted)
+// ─────────────────────────────────────────────────────────
+router.delete('/assignments/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const existing = await prisma.assignment.findUnique({
+      where:   { id },
+      include: { submission: true },
+    });
+
+    if (!existing || existing.teacherId !== req.teacher.id) {
+      return res.status(404).json({ error: 'Assignment not found' });
+    }
+
+    if (existing.submission) {
+      return res.status(409).json({
+        error: 'Cannot delete an assignment that has been submitted. Mark it as overdue instead.',
+      });
+    }
+
+    await prisma.assignment.delete({ where: { id } });
+
+    console.log(`✅ Assignment deleted: ${id}`);
+    return res.json({ message: 'Assignment deleted successfully' });
+  } catch (err) {
+    console.error('Assignment deletion failed:', err);
+    return res.status(500).json({ error: 'Failed to delete assignment' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// POST /api/teacher/assignments/:id/grade
+// Grade a submitted assignment
+// Body: { grade, feedback }
+// ─────────────────────────────────────────────────────────
+router.post('/assignments/:id/grade', async (req, res) => {
+  const { id } = req.params;
+  const { grade, feedback } = req.body;
+
+  if (!grade) {
+    return res.status(400).json({ error: 'grade is required' });
+  }
+
+  // Grade format: any non-empty string — "Excellent", "8/10", "B+", "MashaAllah"
+  if (typeof grade !== 'string' || grade.trim().length === 0) {
+    return res.status(400).json({ error: 'grade must be a non-empty string' });
+  }
+
+  try {
+    const assignment = await prisma.assignment.findUnique({
+      where:   { id },
+      include: { submission: true },
+    });
+
+    if (!assignment || assignment.teacherId !== req.teacher.id) {
+      return res.status(404).json({ error: 'Assignment not found' });
+    }
+
+    if (!assignment.submission) {
+      return res.status(409).json({
+        error: 'Cannot grade an assignment with no submission yet',
+      });
+    }
+
+    // Update submission with grade + feedback, and assignment status to GRADED
+    const [updatedSubmission] = await prisma.$transaction([
+      prisma.assignmentSubmission.update({
+        where: { assignmentId: id },
+        data: {
+          grade:    grade.trim(),
+          feedback: feedback?.trim() || null,
+          gradedAt: new Date(),
+        },
+      }),
+      prisma.assignment.update({
+        where: { id },
+        data:  { status: 'GRADED' },
+      }),
+    ]);
+
+    console.log(`✅ Assignment ${id} graded: ${grade}`);
+    return res.json({
+      message:    'Assignment graded successfully',
+      submission: updatedSubmission,
+    });
+  } catch (err) {
+    console.error('Grading failed:', err);
+    return res.status(500).json({ error: 'Failed to grade assignment' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// POST /api/teacher/assignments/bulk-overdue
+// Mark all past-due PENDING assignments as OVERDUE
+// Run manually or hook to a cron job later
+// ─────────────────────────────────────────────────────────
+router.post('/assignments/bulk-overdue', async (req, res) => {
+  try {
+    const result = await prisma.assignment.updateMany({
+      where: {
+        teacherId: req.teacher.id,
+        status:    'PENDING',
+        dueDate:   { lt: new Date() },
+      },
+      data: { status: 'OVERDUE' },
+    });
+
+    console.log(`✅ Marked ${result.count} assignments as OVERDUE`);
+    return res.json({
+      message: `${result.count} assignment(s) marked as overdue`,
+      count:   result.count,
+    });
+  } catch (err) {
+    console.error('Bulk overdue update failed:', err);
+    return res.status(500).json({ error: 'Failed to update overdue assignments' });
+  }
+});
+
 export default router;
