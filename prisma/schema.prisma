@@ -339,35 +339,33 @@ model AssignmentSubmission {
 // ─────────────────────────────────────────────────────────
 
 model ProgressReport {
-  id String @id @default(cuid())
-
-  teacherId String
-  teacher   Teacher @relation("TeacherReports", fields: [teacherId], references: [id])
-
-  studentId String
-  student   User   @relation("StudentReports", fields: [studentId], references: [id])
-
+  id          String       @id @default(cuid())
+  teacherId   String
+  studentId   String
   enrollmentId String?
-  enrollment   Enrollment? @relation(fields: [enrollmentId], references: [id])
+  period      String       // e.g. "Week 12", "Month 3", "June 2026"
+  courseType  CourseType
+  status      ReportStatus @default(DRAFT)
 
-  // Report content
-  period            String
-  tajweedProgress   String
-  recitationLevel   String
-  memorization      String
-  attendanceSummary String
-  behaviour         String?
-  teacherNotes      String
-  recommendations   String?
-  nextGoals         String?
+  // Structured report fields
+  overallRating     Int?     // 1–5
+  tajweedProgress   String?
+  recitationNotes   String?
+  behaviourNotes    String?
+  homeworkNotes     String?
+  teacherMessage    String?  // personal message to parent
+  nextSteps         String?
 
-  status ReportStatus @default(DRAFT)
-  sentAt DateTime?
+  sentAt      DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  teacher    Teacher     @relation("TeacherReports", fields: [teacherId], references: [id])
+  student    User        @relation("StudentReports", fields: [studentId], references: [id])
+  enrollment Enrollment? @relation(fields: [enrollmentId], references: [id])
 
-  @@map("progress_reports")
+  @@index([teacherId])
+  @@index([studentId])
 }
 
 // ─────────────────────────────────────────────────────────
