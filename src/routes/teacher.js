@@ -1257,4 +1257,458 @@ router.delete('/reports/:id', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────
+// ATTENDANCE
+// ─────────────────────────────────────────────────────────
+
+// GET /api/teacher/attendance
+// All attendance records for this teacher
+// Query: ?studentId= ?status= ?from= ?to=
+router.get('/attendance', async (req, res) => {
+  const { studentId, status, from, to } = req.query;
+
+  const validStatuses = ['PRESENT', 'LATE', 'ABSENT', 'EXCUSED'];
+  if (status && !validStatuses.includes(status)) {
+    return res.status(400).json({
+      error: `Invalid status. Must be one of: ${validStatuses.join(', ')}`,
+    });
+  }
+
+  const where = { teacherId: req.teacher.id };
+  if (studentId) where.studentId = studentId;
+  if (status)    where.status    = status;
+  if (from || to) {
+    where.markedAt = {};
+    if (from) where.markedAt.gte = new Date(from);
+    if (to)   where.markedAt.lte = new Date(to);
+  }
+
+  try {
+    const records = await prisma.attendanceRecord.findMany({
+      where,
+      include: {
+        student: {
+          select: {
+            id:    true,
+            email: true,
+            studentProfile: {
+              select: { childName: true, parentName: true },
+            },
+          },
+        },
+        session: {
+          select: {
+            id:          true,
+            scheduledAt: true,
+            courseType:  true,
+            status:      true,
+            zoomLink:    true,
+          },
+        },
+      },
+      orderBy: { markedAt: 'desc' },
+    });
+
+    return res.json({ records, count: records.length });
+  } catch (err) {
+    console.error('Attendance fetch failed:', err);
+    return res.status(500).json({ error: 'Failed to fetch attendance records' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// GET /api/teacher/attendance/summary
+// Attendance summary per student for this teacher
+// Returns: percentage, totals, last session date per student
+// ─────────────────────────────────────────────────────────
+router.get('/attendance/summary', async (req, res) => {
+  try {
+    // Get all active enrollments for this teacher
+    const enrollments = await prisma.enrollment.findMany({
+      where: {
+        teacherId: req.teacher.id,
+        status:    'ACTIVE',
+      },
+      include: {
+        student: {
+          select: {
+            id:    true,
+            email: true,
+            studentProfile: {
+              select: { childName: true, parentName: true },
+            },
+          },
+        },
+      },
+    });
+
+    // For each student, fetch their attendance stats
+    const summaries = await Promise.all(
+      enrollments.map(async (enrollment) => {
+        const records = await prisma.attendanceRecord.findMany({
+          where: {
+            teacherId: req.teacher.id,
+            studentId: enrollment.studentId,
+          },
+          include: {
+            session: {
+              select: { scheduledAt: true },
+            },
+          },
+          orderBy: { markedAt: 'desc' },
+        });
+
+        const total   = records.length;
+        const present = records.filter(r => r.status === 'PRESENT').length;
+        const late    = records.filter(r => r.status === 'LATE').length;
+        const absent  = records.filter(r => r.status === 'ABSENT').length;
+        const excused = records.filter(r => r.status === 'EXCUSED').length;
+
+        // Present + Late both count as attended
+        const attended   = present + late;
+        const percentage = total > 0 ? Math.round((attended / total) * 100) : 0;
+
+        const lastRecord = records[0]; // already ordered desc
+
+        return {
+          student: {
+            id:      enrollment.student.id,
+            email:   enrollment.student.email,
+            profile: enrollment.student.studentProfile,
+          },
+          enrollment: {
+            id:         enrollment.id,
+            courseType: enrollment.courseType,
+          },
+          attendance: {
+            percentage,
+            total,
+            present,
+            late,
+            absent,
+            excused,
+            lastSessionDate: lastRecord?.session?.scheduledAt || null,
+          },
+        };
+      })
+    );
+
+    return res.json({ summaries, count: summaries.length });
+  } catch (err) {
+    console.error('Attendance summary failed:', err);
+    return res.status(500).json({ error: 'Failed to fetch attendance summary' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// GET /api/teacher/attendance/session/:sessionId
+// Get attendance record for a specific session
+// ─────────────────────────────────────────────────────────
+router.get('/attendance/session/:sessionId', async (req, res) => {
+  const { sessionId } = req.params;
+
+  try {
+    // Verify session belongs to this teacher
+    const session = await prisma.classSession.findUnique({
+      where: { id: sessionId },
+    });
+
+    if (!session || session.teacherId !== req.teacher.id) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const record = await prisma.attendanceRecord.findUnique({
+      where: { sessionId },
+      include: {
+        student: {
+          select: {
+            id:    true,
+            email: true,
+            studentProfile: {
+              select: { childName: true },
+            },
+          },
+        },
+      },
+    });
+
+    // record can be null — session exists but not yet marked
+    return res.json({
+      session: {
+        id:          session.id,
+        scheduledAt: session.scheduledAt,
+        courseType:  session.courseType,
+        status:      session.status,
+      },
+      attendance: record || null,
+      marked:     !!record,
+    });
+  } catch (err) {
+    console.error('Session attendance fetch failed:', err);
+    return res.status(500).json({ error: 'Failed to fetch session attendance' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// POST /api/teacher/attendance
+// Mark attendance for a session
+// Body: { sessionId, status, notes }
+// ─────────────────────────────────────────────────────────
+router.post('/attendance', async (req, res) => {
+  const { sessionId, status, notes } = req.body;
+
+  // Validation
+  const errors = [];
+  if (!sessionId) errors.push('sessionId is required');
+  if (!status)    errors.push('status is required');
+
+  const validStatuses = ['PRESENT', 'LATE', 'ABSENT', 'EXCUSED'];
+  if (status && !validStatuses.includes(status)) {
+    errors.push(`status must be one of: ${validStatuses.join(', ')}`);
+  }
+
+  if (errors.length > 0) {
+    return res.status(400).json({ error: 'Validation failed', details: errors });
+  }
+
+  try {
+    // Verify session belongs to this teacher
+    const session = await prisma.classSession.findUnique({
+      where: { id: sessionId },
+    });
+
+    if (!session || session.teacherId !== req.teacher.id) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    // Check not already marked
+    const existing = await prisma.attendanceRecord.findUnique({
+      where: { sessionId },
+    });
+
+    if (existing) {
+      return res.status(409).json({
+        error:      'Attendance already marked for this session. Use PATCH to update.',
+        recordId:   existing.id,
+        currentStatus: existing.status,
+      });
+    }
+
+    // Find the enrollment for this teacher + student combination
+    const enrollment = await prisma.enrollment.findFirst({
+      where: {
+        teacherId: req.teacher.id,
+        studentId: session.studentId,
+      },
+    });
+
+    // Create attendance record and update session status in a transaction
+    const [record] = await prisma.$transaction([
+      prisma.attendanceRecord.create({
+        data: {
+          teacherId:    req.teacher.id,
+          studentId:    session.studentId,
+          sessionId,
+          enrollmentId: enrollment?.id || null,
+          status,
+          notes:        notes?.trim() || null,
+        },
+        include: {
+          student: {
+            select: {
+              id:    true,
+              email: true,
+              studentProfile: {
+                select: { childName: true },
+              },
+            },
+          },
+          session: {
+            select: {
+              id:          true,
+              scheduledAt: true,
+              courseType:  true,
+            },
+          },
+        },
+      }),
+
+      // Auto-update session status based on attendance
+      // PRESENT/LATE → COMPLETED, ABSENT/EXCUSED → MISSED
+      prisma.classSession.update({
+        where: { id: sessionId },
+        data: {
+          status: ['PRESENT', 'LATE'].includes(status) ? 'COMPLETED' : 'MISSED',
+        },
+      }),
+    ]);
+
+    console.log(
+      `✅ Attendance marked: ${record.student.studentProfile?.childName || 'Student'} — ${status}`
+    );
+    return res.status(201).json({ record });
+  } catch (err) {
+    // Handle unique constraint violation gracefully
+    if (err.code === 'P2002') {
+      return res.status(409).json({
+        error: 'Attendance already marked for this session',
+      });
+    }
+    console.error('Attendance marking failed:', err);
+    return res.status(500).json({ error: 'Failed to mark attendance' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// PATCH /api/teacher/attendance/:id
+// Update an existing attendance record
+// Only status and notes can be changed
+// ─────────────────────────────────────────────────────────
+router.patch('/attendance/:id', async (req, res) => {
+  const { id } = req.params;
+  const { status, notes } = req.body;
+
+  if (!status && notes === undefined) {
+    return res.status(400).json({
+      error: 'Provide at least one field to update: status or notes',
+    });
+  }
+
+  const validStatuses = ['PRESENT', 'LATE', 'ABSENT', 'EXCUSED'];
+  if (status && !validStatuses.includes(status)) {
+    return res.status(400).json({
+      error: `Invalid status. Must be one of: ${validStatuses.join(', ')}`,
+    });
+  }
+
+  try {
+    const existing = await prisma.attendanceRecord.findUnique({
+      where: { id },
+    });
+
+    if (!existing || existing.teacherId !== req.teacher.id) {
+      return res.status(404).json({ error: 'Attendance record not found' });
+    }
+
+    const updateData = {};
+    if (status !== undefined) updateData.status = status;
+    if (notes  !== undefined) updateData.notes  = notes?.trim() || null;
+
+    const [updated] = await prisma.$transaction([
+      prisma.attendanceRecord.update({
+        where: { id },
+        data:  updateData,
+        include: {
+          student: {
+            select: {
+              id:    true,
+              email: true,
+              studentProfile: {
+                select: { childName: true },
+              },
+            },
+          },
+          session: {
+            select: {
+              id:          true,
+              scheduledAt: true,
+              courseType:  true,
+            },
+          },
+        },
+      }),
+
+      // Sync session status if attendance status changed
+      ...(status ? [
+        prisma.classSession.update({
+          where: { id: existing.sessionId },
+          data: {
+            status: ['PRESENT', 'LATE'].includes(status) ? 'COMPLETED' : 'MISSED',
+          },
+        }),
+      ] : []),
+    ]);
+
+    console.log(`✅ Attendance updated: ${id} → ${updated.status}`);
+    return res.json({ record: updated });
+  } catch (err) {
+    console.error('Attendance update failed:', err);
+    return res.status(500).json({ error: 'Failed to update attendance record' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// GET /api/teacher/attendance/student/:studentId
+// Full attendance history for one student with this teacher
+// Includes percentage breakdown and per-session records
+// ─────────────────────────────────────────────────────────
+router.get('/attendance/student/:studentId', async (req, res) => {
+  const { studentId } = req.params;
+  const { from, to }  = req.query;
+
+  try {
+    // Verify student is enrolled with this teacher
+    const enrollment = await prisma.enrollment.findFirst({
+      where: {
+        teacherId: req.teacher.id,
+        studentId,
+      },
+    });
+
+    if (!enrollment) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
+    const where = {
+      teacherId: req.teacher.id,
+      studentId,
+    };
+    if (from || to) {
+      where.markedAt = {};
+      if (from) where.markedAt.gte = new Date(from);
+      if (to)   where.markedAt.lte = new Date(to);
+    }
+
+    const records = await prisma.attendanceRecord.findMany({
+      where,
+      include: {
+        session: {
+          select: {
+            id:           true,
+            scheduledAt:  true,
+            courseType:   true,
+            status:       true,
+            teacherNotes: true,
+          },
+        },
+      },
+      orderBy: { markedAt: 'desc' },
+    });
+
+    // Calculate stats
+    const total   = records.length;
+    const present = records.filter(r => r.status === 'PRESENT').length;
+    const late    = records.filter(r => r.status === 'LATE').length;
+    const absent  = records.filter(r => r.status === 'ABSENT').length;
+    const excused = records.filter(r => r.status === 'EXCUSED').length;
+    const attended   = present + late;
+    const percentage = total > 0 ? Math.round((attended / total) * 100) : 0;
+
+    return res.json({
+      stats: {
+        percentage,
+        total,
+        present,
+        late,
+        absent,
+        excused,
+      },
+      records,
+    });
+  } catch (err) {
+    console.error('Student attendance fetch failed:', err);
+    return res.status(500).json({ error: 'Failed to fetch student attendance' });
+  }
+});
+
 export default router;

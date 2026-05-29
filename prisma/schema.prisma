@@ -282,9 +282,10 @@ model Enrollment {
   updatedAt DateTime @updatedAt
 
   // Back-relations
-  sessions        ClassSession[]
-  assignments     Assignment[]
-  progressReports ProgressReport[]
+  sessions          ClassSession[]
+  assignments       Assignment[]
+  progressReports   ProgressReport[]
+  attendanceRecords AttendanceRecord[]
 
   @@map("enrollments")
 }
@@ -339,26 +340,26 @@ model AssignmentSubmission {
 // ─────────────────────────────────────────────────────────
 
 model ProgressReport {
-  id          String       @id @default(cuid())
-  teacherId   String
-  studentId   String
+  id           String       @id @default(cuid())
+  teacherId    String
+  studentId    String
   enrollmentId String?
-  period      String       // e.g. "Week 12", "Month 3", "June 2026"
-  courseType  CourseType
-  status      ReportStatus @default(DRAFT)
+  period       String // e.g. "Week 12", "Month 3", "June 2026"
+  courseType   CourseType
+  status       ReportStatus @default(DRAFT)
 
   // Structured report fields
-  overallRating     Int?     // 1–5
-  tajweedProgress   String?
-  recitationNotes   String?
-  behaviourNotes    String?
-  homeworkNotes     String?
-  teacherMessage    String?  // personal message to parent
-  nextSteps         String?
+  overallRating   Int? // 1–5
+  tajweedProgress String?
+  recitationNotes String?
+  behaviourNotes  String?
+  homeworkNotes   String?
+  teacherMessage  String? // personal message to parent
+  nextSteps       String?
 
-  sentAt      DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  sentAt    DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
   teacher    Teacher     @relation("TeacherReports", fields: [teacherId], references: [id])
   student    User        @relation("StudentReports", fields: [studentId], references: [id])
@@ -373,20 +374,22 @@ model ProgressReport {
 // ─────────────────────────────────────────────────────────
 
 model AttendanceRecord {
-  id String @id @default(cuid())
+  id           String           @id @default(cuid())
+  teacherId    String
+  studentId    String
+  sessionId    String           @unique // one record per session
+  enrollmentId String?
+  status       AttendanceStatus
+  notes        String?
+  markedAt     DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
 
-  sessionId String       @unique
-  session   ClassSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  teacher    Teacher      @relation("TeacherAttendanceRecords", fields: [teacherId], references: [id])
+  student    User         @relation("StudentAttendance", fields: [studentId], references: [id])
+  session    ClassSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  enrollment Enrollment?  @relation(fields: [enrollmentId], references: [id])
 
-  studentId String
-  student   User   @relation("StudentAttendance", fields: [studentId], references: [id])
-
-  teacherId String
-  teacher   Teacher @relation("TeacherAttendanceRecords", fields: [teacherId], references: [id])
-
-  status   AttendanceStatus @default(PRESENT)
-  notes    String?
-  markedAt DateTime         @default(now())
-
-  @@map("attendance_records")
+  @@index([teacherId])
+  @@index([studentId])
+  @@index([sessionId])
 }
