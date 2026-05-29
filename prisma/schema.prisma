@@ -33,6 +33,15 @@ enum CourseInterest {
   ONE_TO_ONE
 }
 
+enum CourseType {
+  NOORANI_QAIDA
+  QURAN_RECITATION
+  TAJWEED
+  HIFZ
+  ISLAMIC_STUDIES
+  ONE_TO_ONE
+}
+
 enum LeadStatus {
   NEW
   CONTACTED
@@ -95,12 +104,13 @@ model User {
   trialBookings  TrialBooking[]
 
   // Module 2 relations (NEW)
-  classSessions     ClassSession[]     @relation("StudentSessions")
-  enrollments       Enrollment[]       @relation("StudentEnrollments")
-  assignments       Assignment[]       @relation("StudentAssignments")
-  progressReports   ProgressReport[]   @relation("StudentReports")
-  attendanceRecords AttendanceRecord[] @relation("StudentAttendance")
-  teacher           Teacher?           @relation("TeacherUser")
+  classSessions         ClassSession[]         @relation("StudentSessions")
+  enrollments           Enrollment[]           @relation("StudentEnrollments")
+  assignments           Assignment[]           @relation("StudentAssignments")
+  progressReports       ProgressReport[]       @relation("StudentReports")
+  attendanceRecords     AttendanceRecord[]     @relation("StudentAttendance")
+  teacher               Teacher?               @relation("TeacherUser")
+  assignmentSubmissions AssignmentSubmission[]
 
   @@map("users")
 }
@@ -284,29 +294,25 @@ model Enrollment {
 // ─────────────────────────────────────────────────────────
 
 model Assignment {
-  id String @id @default(cuid())
-
-  teacherId String
-  teacher   Teacher @relation("TeacherAssignments", fields: [teacherId], references: [id])
-
-  studentId String
-  student   User   @relation("StudentAssignments", fields: [studentId], references: [id])
-
+  id           String           @id @default(cuid())
+  teacherId    String
+  studentId    String
   enrollmentId String?
-  enrollment   Enrollment? @relation(fields: [enrollmentId], references: [id])
+  title        String
+  description  String?
+  dueDate      DateTime
+  status       AssignmentStatus @default(PENDING)
+  courseType   CourseType
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
 
-  title       String
-  description String
-  dueDate     DateTime
-  status      AssignmentStatus @default(PENDING)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Back-relation
+  teacher    Teacher               @relation("TeacherAssignments", fields: [teacherId], references: [id])
+  student    User                  @relation("StudentAssignments", fields: [studentId], references: [id])
+  enrollment Enrollment?           @relation(fields: [enrollmentId], references: [id])
   submission AssignmentSubmission?
 
-  @@map("assignments")
+  @@index([teacherId])
+  @@index([studentId])
 }
 
 // ─────────────────────────────────────────────────────────
@@ -314,20 +320,18 @@ model Assignment {
 // ─────────────────────────────────────────────────────────
 
 model AssignmentSubmission {
-  id           String     @id @default(cuid())
-  assignmentId String     @unique
-  assignment   Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  id           String    @id @default(cuid())
+  assignmentId String    @unique
+  studentId    String
+  content      String?
+  fileUrl      String?
+  grade        String?
+  feedback     String?
+  submittedAt  DateTime  @default(now())
+  gradedAt     DateTime?
 
-  notes       String?
-  submittedAt DateTime @default(now())
-
-  // Grading — filled by teacher
-  grade      String?
-  feedback   String?
-  gradedAt   DateTime?
-  gradedById String?
-
-  @@map("assignment_submissions")
+  assignment Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  student    User       @relation(fields: [studentId], references: [id])
 }
 
 // ─────────────────────────────────────────────────────────
