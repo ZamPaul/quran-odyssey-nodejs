@@ -405,3 +405,186 @@ export async function sendAdminLeadNotification({ firstName, lastName, email, ph
     return { success: false };
   }
 }
+
+
+// Add this function to your existing src/services/email.js
+
+export async function sendProgressReport({
+  parentEmail,
+  parentName,
+  childName,
+  teacherName,
+  period,
+  courseType,
+  overallRating,
+  tajweedProgress,
+  recitationNotes,
+  behaviourNotes,
+  homeworkNotes,
+  teacherMessage,
+  nextSteps,
+}) {
+  const stars     = '⭐'.repeat(overallRating || 0);
+  const noStars   = '☆'.repeat(5 - (overallRating || 0));
+  const ratingStr = overallRating ? `${stars}${noStars} (${overallRating}/5)` : 'Not rated';
+
+  const courseLabel = {
+    NOORANI_QAIDA:    'Noorani Qaida',
+    QURAN_RECITATION: 'Quran Recitation',
+    TAJWEED:          'Tajweed',
+    HIFZ:             'Hifz Programme',
+    ISLAMIC_STUDIES:  'Islamic Studies',
+    ONE_TO_ONE:       'One-to-One Classes',
+  }[courseType] || courseType;
+
+  // Build optional sections — only include what the teacher filled in
+  const sections = [];
+
+  if (tajweedProgress) {
+    sections.push(`
+      <tr>
+        <td style="padding: 12px 0; border-bottom: 1px solid #e2e8f0;">
+          <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #94a3b8; margin-bottom: 4px;">Tajweed Progress</div>
+          <div style="font-size: 14px; color: #334155; line-height: 1.6;">${tajweedProgress}</div>
+        </td>
+      </tr>`);
+  }
+
+  if (recitationNotes) {
+    sections.push(`
+      <tr>
+        <td style="padding: 12px 0; border-bottom: 1px solid #e2e8f0;">
+          <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #94a3b8; margin-bottom: 4px;">Recitation</div>
+          <div style="font-size: 14px; color: #334155; line-height: 1.6;">${recitationNotes}</div>
+        </td>
+      </tr>`);
+  }
+
+  if (behaviourNotes) {
+    sections.push(`
+      <tr>
+        <td style="padding: 12px 0; border-bottom: 1px solid #e2e8f0;">
+          <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #94a3b8; margin-bottom: 4px;">Behaviour & Attitude</div>
+          <div style="font-size: 14px; color: #334155; line-height: 1.6;">${behaviourNotes}</div>
+        </td>
+      </tr>`);
+  }
+
+  if (homeworkNotes) {
+    sections.push(`
+      <tr>
+        <td style="padding: 12px 0; border-bottom: 1px solid #e2e8f0;">
+          <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #94a3b8; margin-bottom: 4px;">Homework & Practice</div>
+          <div style="font-size: 14px; color: #334155; line-height: 1.6;">${homeworkNotes}</div>
+        </td>
+      </tr>`);
+  }
+
+  if (nextSteps) {
+    sections.push(`
+      <tr>
+        <td style="padding: 12px 0;">
+          <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #94a3b8; margin-bottom: 4px;">Next Steps</div>
+          <div style="font-size: 14px; color: #334155; line-height: 1.6;">${nextSteps}</div>
+        </td>
+      </tr>`);
+  }
+
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Progress Report — ${childName}</title>
+</head>
+<body style="margin: 0; padding: 0; background: #f7f9fb; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
+
+  <div style="max-width: 600px; margin: 0 auto; padding: 32px 16px;">
+
+    <!-- Header -->
+    <div style="background: #0d2840; border-radius: 16px 16px 0 0; padding: 32px 36px;">
+      <div style="font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: #28b7d9; margin-bottom: 8px;">
+        Quran Odyssey
+      </div>
+      <div style="font-size: 24px; font-weight: 800; color: #ffffff; line-height: 1.2;">
+        Progress Report
+      </div>
+      <div style="font-size: 14px; color: rgba(255,255,255,0.5); margin-top: 6px;">
+        ${period} · ${courseLabel}
+      </div>
+    </div>
+
+    <!-- Body -->
+    <div style="background: #ffffff; border-radius: 0 0 16px 16px; padding: 36px; border: 1px solid #e2e8f0; border-top: none;">
+
+      <!-- Greeting -->
+      <p style="font-size: 15px; color: #0f172a; margin: 0 0 8px; font-weight: 600;">
+        As-salamu alaykum, ${parentName},
+      </p>
+      <p style="font-size: 14px; color: #64748b; line-height: 1.7; margin: 0 0 28px;">
+        Here is ${childName}'s progress report for <strong>${period}</strong>, prepared by <strong>${teacherName}</strong>.
+      </p>
+
+      <!-- Overall rating -->
+      <div style="background: #f7f9fb; border-radius: 10px; padding: 18px 20px; margin-bottom: 28px; display: flex; align-items: center; justify-content: space-between;">
+        <div>
+          <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #94a3b8; margin-bottom: 4px;">Overall Rating</div>
+          <div style="font-size: 22px;">${ratingStr}</div>
+        </div>
+        <div style="text-align: right;">
+          <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #94a3b8; margin-bottom: 4px;">Student</div>
+          <div style="font-size: 14px; font-weight: 700; color: #0f172a;">${childName}</div>
+        </div>
+      </div>
+
+      <!-- Dynamic sections -->
+      ${sections.length > 0 ? `
+        <table style="width: 100%; border-collapse: collapse; margin-bottom: 28px;">
+          <tbody>
+            ${sections.join('')}
+          </tbody>
+        </table>
+      ` : ''}
+
+      <!-- Teacher's personal message -->
+      ${teacherMessage ? `
+        <div style="background: linear-gradient(135deg, #daf4fb, #c2eaf9); border-radius: 10px; padding: 20px; margin-bottom: 28px; border-left: 4px solid #28b7d9;">
+          <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #0e6e8a; margin-bottom: 8px;">
+            Message from ${teacherName}
+          </div>
+          <div style="font-size: 14px; color: #0e6e8a; line-height: 1.7; font-style: italic;">
+            "${teacherMessage}"
+          </div>
+        </div>
+      ` : ''}
+
+      <!-- Footer note -->
+      <p style="font-size: 13px; color: #94a3b8; line-height: 1.6; border-top: 1px solid #e2e8f0; padding-top: 20px; margin: 0;">
+        This report was sent from Quran Odyssey on behalf of ${teacherName}. 
+        If you have any questions, reply to this email or message us on WhatsApp.
+      </p>
+    </div>
+
+    <!-- Footer -->
+    <div style="text-align: center; padding: 20px 0; font-size: 12px; color: #94a3b8;">
+      © 2026 Quran Odyssey · Built by VISAITECH
+    </div>
+  </div>
+
+</body>
+</html>`;
+
+  const { data, error } = await resend.emails.send({
+    from:    'Quran Odyssey <reports@quranodyssey.com>',
+    to:      parentEmail,
+    subject: `${childName}'s Progress Report — ${period}`,
+    html,
+  });
+
+  if (error) {
+    throw new Error(`Resend error: ${JSON.stringify(error)}`);
+  }
+
+  return data;
+}

@@ -2,6 +2,7 @@
 import express from 'express';
 import {prisma} from '../lib/prisma.js';
 import { requireTeacher } from '../middleware/teacherAuth.js';
+import { sendProgressReport } from '../services/email.js';
 
 const router = express.Router();
 
@@ -857,6 +858,402 @@ router.post('/assignments/bulk-overdue', async (req, res) => {
   } catch (err) {
     console.error('Bulk overdue update failed:', err);
     return res.status(500).json({ error: 'Failed to update overdue assignments' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// PROGRESS REPORTS
+// ─────────────────────────────────────────────────────────
+
+// GET /api/teacher/reports
+// All reports for this teacher
+// Query: ?status= ?studentId=
+router.get('/reports', async (req, res) => {
+  const { status, studentId } = req.query;
+
+  const validStatuses = ['DRAFT', 'SENT'];
+  if (status && !validStatuses.includes(status)) {
+    return res.status(400).json({
+      error: `Invalid status. Must be DRAFT or SENT`,
+    });
+  }
+
+  const where = { teacherId: req.teacher.id };
+  if (status)    where.status    = status;
+  if (studentId) where.studentId = studentId;
+
+  try {
+    const reports = await prisma.progressReport.findMany({
+      where,
+      include: {
+        student: {
+          select: {
+            id:    true,
+            email: true,
+            studentProfile: {
+              select: { childName: true, parentName: true },
+            },
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return res.json({ reports, count: reports.length });
+  } catch (err) {
+    console.error('Reports fetch failed:', err);
+    return res.status(500).json({ error: 'Failed to fetch reports' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// GET /api/teacher/reports/:id
+// Single report with full detail
+// ─────────────────────────────────────────────────────────
+router.get('/reports/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const report = await prisma.progressReport.findUnique({
+      where:   { id },
+      include: {
+        student: {
+          select: {
+            id:    true,
+            email: true,
+            studentProfile: {
+              select: {
+                childName:  true,
+                parentName: true,
+                timezone:   true,
+              },
+            },
+          },
+        },
+        enrollment: {
+          select: { courseType: true, status: true },
+        },
+      },
+    });
+
+    if (!report || report.teacherId !== req.teacher.id) {
+      return res.status(404).json({ error: 'Report not found' });
+    }
+
+    return res.json({ report });
+  } catch (err) {
+    console.error('Report fetch failed:', err);
+    return res.status(500).json({ error: 'Failed to fetch report' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// POST /api/teacher/reports
+// Create a new progress report (starts as DRAFT)
+// ─────────────────────────────────────────────────────────
+router.post('/reports', async (req, res) => {
+  const {
+    studentId,
+    enrollmentId,
+    period,
+    courseType,
+    overallRating,
+    tajweedProgress,
+    recitationNotes,
+    behaviourNotes,
+    homeworkNotes,
+    teacherMessage,
+    nextSteps,
+  } = req.body;
+
+  // Required field validation
+  const errors = [];
+  if (!studentId)  errors.push('studentId is required');
+  if (!period)     errors.push('period is required (e.g. "Week 12")');
+  if (!courseType) errors.push('courseType is required');
+
+  if (errors.length > 0) {
+    return res.status(400).json({ error: 'Validation failed', details: errors });
+  }
+
+  // Validate rating range if provided
+  if (overallRating !== undefined && overallRating !== null) {
+    const rating = Number(overallRating);
+    if (isNaN(rating) || rating < 1 || rating > 5) {
+      return res.status(400).json({
+        error: 'overallRating must be a number between 1 and 5',
+      });
+    }
+  }
+
+  try {
+    // Verify student is enrolled with this teacher
+    const enrollment = await prisma.enrollment.findFirst({
+      where: {
+        teacherId: req.teacher.id,
+        studentId,
+        status:    'ACTIVE',
+      },
+    });
+
+    if (!enrollment) {
+      return res.status(404).json({
+        error: 'Student not found or not actively enrolled with you',
+      });
+    }
+
+    // Check for duplicate report — same student + period + course
+    const duplicate = await prisma.progressReport.findFirst({
+      where: {
+        teacherId:  req.teacher.id,
+        studentId,
+        period:     period.trim(),
+        courseType,
+      },
+    });
+
+    if (duplicate) {
+      return res.status(409).json({
+        error:    `A report for "${period}" already exists for this student`,
+        reportId: duplicate.id,
+      });
+    }
+
+    const report = await prisma.progressReport.create({
+      data: {
+        teacherId:    req.teacher.id,
+        studentId,
+        enrollmentId: enrollmentId || enrollment.id,
+        period:       period.trim(),
+        courseType,
+        status:       'DRAFT',
+        overallRating:   overallRating ? Number(overallRating) : null,
+        tajweedProgress: tajweedProgress?.trim() || null,
+        recitationNotes: recitationNotes?.trim() || null,
+        behaviourNotes:  behaviourNotes?.trim()  || null,
+        homeworkNotes:   homeworkNotes?.trim()   || null,
+        teacherMessage:  teacherMessage?.trim()  || null,
+        nextSteps:       nextSteps?.trim()        || null,
+      },
+      include: {
+        student: {
+          select: {
+            id:    true,
+            email: true,
+            studentProfile: {
+              select: { childName: true, parentName: true },
+            },
+          },
+        },
+      },
+    });
+
+    console.log(`✅ Progress report created: ${report.id} — ${period}`);
+    return res.status(201).json({ report });
+  } catch (err) {
+    console.error('Report creation failed:', err);
+    return res.status(500).json({ error: 'Failed to create report' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// PATCH /api/teacher/reports/:id
+// Update a DRAFT report
+// Cannot edit a report that has already been SENT
+// ─────────────────────────────────────────────────────────
+router.patch('/reports/:id', async (req, res) => {
+  const { id } = req.params;
+  const {
+    period,
+    overallRating,
+    tajweedProgress,
+    recitationNotes,
+    behaviourNotes,
+    homeworkNotes,
+    teacherMessage,
+    nextSteps,
+  } = req.body;
+
+  try {
+    const existing = await prisma.progressReport.findUnique({ where: { id } });
+
+    if (!existing || existing.teacherId !== req.teacher.id) {
+      return res.status(404).json({ error: 'Report not found' });
+    }
+
+    if (existing.status === 'SENT') {
+      return res.status(409).json({
+        error: 'Cannot edit a report that has already been sent to the parent',
+      });
+    }
+
+    if (overallRating !== undefined && overallRating !== null) {
+      const rating = Number(overallRating);
+      if (isNaN(rating) || rating < 1 || rating > 5) {
+        return res.status(400).json({
+          error: 'overallRating must be a number between 1 and 5',
+        });
+      }
+    }
+
+    const updateData = {};
+    if (period          !== undefined) updateData.period          = period.trim();
+    if (overallRating   !== undefined) updateData.overallRating   = overallRating ? Number(overallRating) : null;
+    if (tajweedProgress !== undefined) updateData.tajweedProgress = tajweedProgress?.trim() || null;
+    if (recitationNotes !== undefined) updateData.recitationNotes = recitationNotes?.trim() || null;
+    if (behaviourNotes  !== undefined) updateData.behaviourNotes  = behaviourNotes?.trim()  || null;
+    if (homeworkNotes   !== undefined) updateData.homeworkNotes   = homeworkNotes?.trim()   || null;
+    if (teacherMessage  !== undefined) updateData.teacherMessage  = teacherMessage?.trim()  || null;
+    if (nextSteps       !== undefined) updateData.nextSteps       = nextSteps?.trim()        || null;
+
+    const updated = await prisma.progressReport.update({
+      where:   { id },
+      data:    updateData,
+      include: {
+        student: {
+          select: {
+            id:    true,
+            email: true,
+            studentProfile: {
+              select: { childName: true, parentName: true },
+            },
+          },
+        },
+      },
+    });
+
+    return res.json({ report: updated });
+  } catch (err) {
+    console.error('Report update failed:', err);
+    return res.status(500).json({ error: 'Failed to update report' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// POST /api/teacher/reports/:id/send
+// Send a DRAFT report to the parent via email
+// Marks report as SENT — cannot be edited after this
+// ─────────────────────────────────────────────────────────
+router.post('/reports/:id/send', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const report = await prisma.progressReport.findUnique({
+      where:   { id },
+      include: {
+        student: {
+          select: {
+            id:    true,
+            email: true,
+            studentProfile: {
+              select: {
+                childName:  true,
+                parentName: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!report || report.teacherId !== req.teacher.id) {
+      return res.status(404).json({ error: 'Report not found' });
+    }
+
+    if (report.status === 'SENT') {
+      return res.status(409).json({
+        error:  'Report has already been sent',
+        sentAt: report.sentAt,
+      });
+    }
+
+    // Determine parent email
+    // Priority: StudentProfile parentEmail field if it exists
+    // Fallback: student's own email (for adult students)
+    const parentEmail =
+      report.student.studentProfile?.parentEmail ||
+      report.student.email;
+
+    const parentName =
+      report.student.studentProfile?.parentName || 'Parent';
+
+    const childName =
+      report.student.studentProfile?.childName ||
+      report.student.email.split('@')[0];
+
+    // Send email — non-blocking failure
+    // If email fails, we still mark the report as sent
+    // and log the error for manual follow-up
+    let emailError = null;
+    try {
+      await sendProgressReport({
+        parentEmail,
+        parentName,
+        childName,
+        teacherName:     req.teacher.name,
+        period:          report.period,
+        courseType:      report.courseType,
+        overallRating:   report.overallRating,
+        tajweedProgress: report.tajweedProgress,
+        recitationNotes: report.recitationNotes,
+        behaviourNotes:  report.behaviourNotes,
+        homeworkNotes:   report.homeworkNotes,
+        teacherMessage:  report.teacherMessage,
+        nextSteps:       report.nextSteps,
+      });
+
+      console.log(`✅ Progress report emailed to ${parentEmail}`);
+    } catch (emailErr) {
+      emailError = emailErr.message;
+      console.error(`❌ Email failed for report ${id}:`, emailErr.message);
+    }
+
+    // Mark report as SENT regardless of email outcome
+    const updated = await prisma.progressReport.update({
+      where: { id },
+      data:  { status: 'SENT', sentAt: new Date() },
+    });
+
+    return res.json({
+      report:     updated,
+      emailSent:  !emailError,
+      emailError: emailError || null,
+      sentTo:     parentEmail,
+    });
+  } catch (err) {
+    console.error('Report send failed:', err);
+    return res.status(500).json({ error: 'Failed to send report' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// DELETE /api/teacher/reports/:id
+// Delete a DRAFT report
+// Cannot delete a SENT report
+// ─────────────────────────────────────────────────────────
+router.delete('/reports/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const existing = await prisma.progressReport.findUnique({ where: { id } });
+
+    if (!existing || existing.teacherId !== req.teacher.id) {
+      return res.status(404).json({ error: 'Report not found' });
+    }
+
+    if (existing.status === 'SENT') {
+      return res.status(409).json({
+        error: 'Cannot delete a report that has already been sent to the parent',
+      });
+    }
+
+    await prisma.progressReport.delete({ where: { id } });
+
+    console.log(`✅ Report deleted: ${id}`);
+    return res.json({ message: 'Report deleted successfully' });
+  } catch (err) {
+    console.error('Report deletion failed:', err);
+    return res.status(500).json({ error: 'Failed to delete report' });
   }
 });
 
