@@ -44,12 +44,19 @@ router.post("/clerk", async (req, res) => {
       return res.status(400).json({ error: "No email on user" });
     }
 
+    // Read role from Clerk publicMetadata
+    // Admin sets this when creating teacher accounts
+    // Defaults to STUDENT for all self-registered users
+    const rawRole    = data.public_metadata?.role || 'STUDENT';
+    const validRoles = ['STUDENT', 'TEACHER', 'ADMIN'];
+    const role       = validRoles.includes(rawRole) ? rawRole : 'STUDENT';
+
     try {
       const user = await prisma.user.create({
         data: {
           clerkId: data.id,
           email: email,      
-          role: "STUDENT",
+          role,
         },
       });  
       console.log(`✅ User created in DB: ${user.email} (${user.id})`);
@@ -68,17 +75,24 @@ router.post("/clerk", async (req, res) => {
   // ─── user.updated ──────────────────────────────────
   if (type === "user.updated") {
     const email = data?.email_addresses?.[0]?.email_address;
+    const rawRole = data.public_metadata?.role;
+    
+    try {
+      const updateData = {};
+      if (email)   updateData.email = email;
+      if (rawRole && ['STUDENT', 'TEACHER', 'ADMIN'].includes(rawRole)) {
+        updateData.role = rawRole;
+      }
 
-    if (email) {
-      try {
+      if (Object.keys(updateData).length > 0) {
         await prisma.user.update({
           where: { clerkId: data.id },
-          data: { email },
+          data:  updateData,
         });
-        console.log(`✅ User email updated in DB: ${data.id}`);
-      } catch (err) {
-        console.error("❌ Failed to update user:", err);
+        console.log(`✅ User updated: ${data.id}`);
       }
+    } catch (err) {
+      console.error('❌ Failed to update user:', err);
     }
   }
 

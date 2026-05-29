@@ -9,6 +9,7 @@ import webhooksRouter from './routes/webhooks.js';
 import studentsRouter from './routes/students.js'
 import bookingRouter  from './routes/booking.js'; 
 import leadsRouter from './routes/leads.js';
+import teacherRouter from "./routes/teacher.js"
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -47,6 +48,7 @@ app.use('/api/students', studentsRouter);
 app.use('/api/booking', bookingRouter); 
 // Add after existing routes
 app.use('/api/leads', leadsRouter);
+app.use('/api/teacher',  teacherRouter);   // ADD THIS
 // Uncomment as you build each phase
 
 // ─── Error Handler ────────────────────────
