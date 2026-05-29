@@ -7,98 +7,9 @@ datasource db {
   provider = "postgresql"
 }
 
-model User {
-  id             String          @id @default(cuid())
-  clerkId        String          @unique
-  email          String          @unique
-  role           Role            @default(STUDENT)
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
-  studentProfile StudentProfile?
-  trialBookings  TrialBooking[]
-
-  @@map("users")
-}
-
-model StudentProfile {
-  id             String         @id @default(cuid())
-  userId         String         @unique
-  parentName     String
-  phone          String?
-  childName      String
-  childAge       Int
-  country        String
-  timezone       String
-  courseInterest CourseInterest
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
-  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@map("student_profiles")
-}
-
-model Teacher {
-  id            String         @id @default(cuid())
-  name          String
-  email         String         @unique
-  specialty     String[]
-  timezone      String
-  gender        String
-  bio           String?
-  rating        Float          @default(0.0)
-  isActive      Boolean        @default(true)
-  calendarId    String         @unique
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
-  trialBookings TrialBooking[]
-
-  @@map("teachers")
-}
-
-model TrialBooking {
-  id              String        @id @default(cuid())
-  studentId       String
-  teacherId       String
-  slotStart       DateTime
-  slotEnd         DateTime
-  status          BookingStatus @default(PENDING)
-  zoomLink        String?
-  calEventId      String?
-  emailSent       Boolean       @default(false)
-  whatsappSent    Boolean       @default(false)
-  studentTimezone String
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
-  student         User          @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  teacher         Teacher       @relation(fields: [teacherId], references: [id])
-
-  @@unique([teacherId, slotStart])
-  @@map("trial_bookings")
-}
-
-enum LeadStatus {
-  NEW
-  CONTACTED
-  BOOKED
-  CONVERTED
-  LOST
-}
-
-model TrialLead {
-  id           String     @id @default(cuid())
-  firstName    String
-  lastName     String
-  email        String
-  phone        String
-  isInterested Boolean    @default(true)
-  source       String     @default("landing_page")
-  status       LeadStatus @default(NEW)
-  notes        String?
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
-
-  @@map("trial_leads")
-}
+// ─────────────────────────────────────────────────────────
+// ENUMS — MODULE 1
+// ─────────────────────────────────────────────────────────
 
 enum Role {
   STUDENT
@@ -120,4 +31,360 @@ enum CourseInterest {
   HIFZ
   ISLAMIC_STUDIES
   ONE_TO_ONE
+}
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  BOOKED
+  CONVERTED
+  LOST
+}
+
+// ─────────────────────────────────────────────────────────
+// ENUMS — MODULE 2 (NEW)
+// ─────────────────────────────────────────────────────────
+
+enum SessionStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+  MISSED
+}
+
+enum EnrollmentStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+enum AssignmentStatus {
+  PENDING
+  SUBMITTED
+  GRADED
+  OVERDUE
+}
+
+enum ReportStatus {
+  DRAFT
+  SENT
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  EXCUSED
+}
+
+// ─────────────────────────────────────────────────────────
+// USER
+// ─────────────────────────────────────────────────────────
+
+model User {
+  id        String   @id @default(cuid())
+  clerkId   String   @unique
+  email     String   @unique
+  role      Role     @default(STUDENT)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Module 1 relations
+  studentProfile StudentProfile?
+  trialBookings  TrialBooking[]
+
+  // Module 2 relations (NEW)
+  classSessions     ClassSession[]     @relation("StudentSessions")
+  enrollments       Enrollment[]       @relation("StudentEnrollments")
+  assignments       Assignment[]       @relation("StudentAssignments")
+  progressReports   ProgressReport[]   @relation("StudentReports")
+  attendanceRecords AttendanceRecord[] @relation("StudentAttendance")
+  teacher           Teacher?           @relation("TeacherUser")
+
+  @@map("users")
+}
+
+// ─────────────────────────────────────────────────────────
+// STUDENT PROFILE
+// ─────────────────────────────────────────────────────────
+
+model StudentProfile {
+  id             String         @id @default(cuid())
+  userId         String         @unique
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parentName     String
+  phone          String?
+  childName      String
+  childAge       Int
+  country        String
+  timezone       String
+  courseInterest CourseInterest
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@map("student_profiles")
+}
+
+// ─────────────────────────────────────────────────────────
+// TEACHER
+// ─────────────────────────────────────────────────────────
+
+model Teacher {
+  id         String   @id @default(cuid())
+  name       String
+  email      String   @unique
+  specialty  String[]
+  timezone   String
+  gender     String
+  bio        String?
+  rating     Float    @default(0.0)
+  isActive   Boolean  @default(true)
+  calendarId String   @unique
+
+  // Module 2 — link to Clerk User (NEW)
+  // Admin sets this after creating the teacher's Clerk account
+  userId String? @unique
+  user   User?   @relation("TeacherUser", fields: [userId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Module 1 relations
+  trialBookings TrialBooking[]
+
+  // Module 2 relations (NEW)
+  classSessions     ClassSession[]     @relation("TeacherSessions")
+  enrollments       Enrollment[]       @relation("TeacherEnrollments")
+  assignments       Assignment[]       @relation("TeacherAssignments")
+  progressReports   ProgressReport[]   @relation("TeacherReports")
+  attendanceRecords AttendanceRecord[] @relation("TeacherAttendanceRecords")
+
+  @@map("teachers")
+}
+
+// ─────────────────────────────────────────────────────────
+// TRIAL BOOKING — MODULE 1 (updated with back-relation)
+// ─────────────────────────────────────────────────────────
+
+model TrialBooking {
+  id              String        @id @default(cuid())
+  studentId       String
+  student         User          @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  teacherId       String
+  teacher         Teacher       @relation(fields: [teacherId], references: [id])
+  slotStart       DateTime
+  slotEnd         DateTime
+  status          BookingStatus @default(PENDING)
+  zoomLink        String?
+  calEventId      String?
+  emailSent       Boolean       @default(false)
+  whatsappSent    Boolean       @default(false)
+  studentTimezone String
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Module 2 — trial can convert to a ClassSession (NEW)
+  classSession ClassSession?
+
+  @@unique([teacherId, slotStart])
+  @@map("trial_bookings")
+}
+
+// ─────────────────────────────────────────────────────────
+// TRIAL LEAD — MODULE 1 EXTRA
+// ─────────────────────────────────────────────────────────
+
+model TrialLead {
+  id           String     @id @default(cuid())
+  firstName    String
+  lastName     String
+  email        String
+  phone        String
+  isInterested Boolean    @default(true)
+  source       String     @default("landing_page")
+  status       LeadStatus @default(NEW)
+  notes        String?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@map("trial_leads")
+}
+
+// ─────────────────────────────────────────────────────────
+// CLASS SESSION — MODULE 2 (NEW)
+// ─────────────────────────────────────────────────────────
+
+model ClassSession {
+  id String @id @default(cuid())
+
+  teacherId String
+  teacher   Teacher @relation("TeacherSessions", fields: [teacherId], references: [id])
+
+  studentId String
+  student   User   @relation("StudentSessions", fields: [studentId], references: [id])
+
+  // Optional links — a session can belong to an enrollment or be a standalone trial
+  enrollmentId String?
+  enrollment   Enrollment? @relation(fields: [enrollmentId], references: [id])
+
+  // If this session originated from a trial booking
+  trialBookingId String?       @unique
+  trialBooking   TrialBooking? @relation(fields: [trialBookingId], references: [id])
+
+  courseType   CourseInterest
+  scheduledAt  DateTime
+  durationMins Int            @default(30)
+  zoomLink     String?
+  status       SessionStatus  @default(SCHEDULED)
+  teacherNotes String?
+  calEventId   String?
+
+  // Back-relation
+  attendance AttendanceRecord?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("class_sessions")
+}
+
+// ─────────────────────────────────────────────────────────
+// ENROLLMENT — MODULE 2 (NEW)
+// ─────────────────────────────────────────────────────────
+
+model Enrollment {
+  id String @id @default(cuid())
+
+  studentId String
+  student   User   @relation("StudentEnrollments", fields: [studentId], references: [id], onDelete: Cascade)
+
+  teacherId String
+  teacher   Teacher @relation("TeacherEnrollments", fields: [teacherId], references: [id])
+
+  courseType      CourseInterest
+  startDate       DateTime         @default(now())
+  status          EnrollmentStatus @default(ACTIVE)
+  sessionsPerWeek Int              @default(2)
+  notes           String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Back-relations
+  sessions        ClassSession[]
+  assignments     Assignment[]
+  progressReports ProgressReport[]
+
+  @@map("enrollments")
+}
+
+// ─────────────────────────────────────────────────────────
+// ASSIGNMENT — MODULE 2 (NEW)
+// ─────────────────────────────────────────────────────────
+
+model Assignment {
+  id String @id @default(cuid())
+
+  teacherId String
+  teacher   Teacher @relation("TeacherAssignments", fields: [teacherId], references: [id])
+
+  studentId String
+  student   User   @relation("StudentAssignments", fields: [studentId], references: [id])
+
+  enrollmentId String?
+  enrollment   Enrollment? @relation(fields: [enrollmentId], references: [id])
+
+  title       String
+  description String
+  dueDate     DateTime
+  status      AssignmentStatus @default(PENDING)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Back-relation
+  submission AssignmentSubmission?
+
+  @@map("assignments")
+}
+
+// ─────────────────────────────────────────────────────────
+// ASSIGNMENT SUBMISSION — MODULE 2 (NEW)
+// ─────────────────────────────────────────────────────────
+
+model AssignmentSubmission {
+  id           String     @id @default(cuid())
+  assignmentId String     @unique
+  assignment   Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+
+  notes       String?
+  submittedAt DateTime @default(now())
+
+  // Grading — filled by teacher
+  grade      String?
+  feedback   String?
+  gradedAt   DateTime?
+  gradedById String?
+
+  @@map("assignment_submissions")
+}
+
+// ─────────────────────────────────────────────────────────
+// PROGRESS REPORT — MODULE 2 (NEW)
+// ─────────────────────────────────────────────────────────
+
+model ProgressReport {
+  id String @id @default(cuid())
+
+  teacherId String
+  teacher   Teacher @relation("TeacherReports", fields: [teacherId], references: [id])
+
+  studentId String
+  student   User   @relation("StudentReports", fields: [studentId], references: [id])
+
+  enrollmentId String?
+  enrollment   Enrollment? @relation(fields: [enrollmentId], references: [id])
+
+  // Report content
+  period            String
+  tajweedProgress   String
+  recitationLevel   String
+  memorization      String
+  attendanceSummary String
+  behaviour         String?
+  teacherNotes      String
+  recommendations   String?
+  nextGoals         String?
+
+  status ReportStatus @default(DRAFT)
+  sentAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("progress_reports")
+}
+
+// ─────────────────────────────────────────────────────────
+// ATTENDANCE RECORD — MODULE 2 (NEW)
+// ─────────────────────────────────────────────────────────
+
+model AttendanceRecord {
+  id String @id @default(cuid())
+
+  sessionId String       @unique
+  session   ClassSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  studentId String
+  student   User   @relation("StudentAttendance", fields: [studentId], references: [id])
+
+  teacherId String
+  teacher   Teacher @relation("TeacherAttendanceRecords", fields: [teacherId], references: [id])
+
+  status   AttendanceStatus @default(PRESENT)
+  notes    String?
+  markedAt DateTime         @default(now())
+
+  @@map("attendance_records")
 }
