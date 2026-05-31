@@ -177,3 +177,52 @@ export async function deleteBookingEvent(calendarId, eventId) {
     }
   }
 }
+
+// Add to src/services/googleCalendar.js
+export async function createUniversalTrialEvent({
+  slotStart,
+  durationMins = 30,
+  parentName,
+  childName,
+  courseLabel,
+  genderPreference,
+  parentEmail,
+}) {
+  const calendarId = process.env.UNIVERSAL_CALENDAR_ID;
+
+  if (!calendarId) {
+    throw new Error('UNIVERSAL_CALENDAR_ID is not set in environment variables');
+  }
+
+  const auth = getAuth();
+  const cal = google.calendar({ version: 'v3', auth });
+
+  const start  = new Date(slotStart);
+  const end    = new Date(start.getTime() + durationMins * 60 * 1000);
+
+  const genderLabel = {
+    MALE:           'Prefers male teacher',
+    FEMALE:         'Prefers female teacher',
+    NO_PREFERENCE:  'No teacher preference',
+  }[genderPreference] || 'No preference stated';
+
+  const event = await cal.events.insert({
+    calendarId,
+    requestBody: {
+      summary:     `Trial Class — ${childName}`,
+      description: [
+        `Parent: ${parentName}`,
+        `Email:  ${parentEmail}`,
+        `Course: ${courseLabel}`,
+        `Gender preference: ${genderLabel}`,
+        '',
+        '⚠️ Teacher not yet assigned — assign via Supabase and update this event.',
+      ].join('\n'),
+      start: { dateTime: start.toISOString(), timeZone: 'UTC' },
+      end:   { dateTime: end.toISOString(),   timeZone: 'UTC' },
+      colorId: '5', // banana yellow — easy to spot unassigned trials
+    },
+  });
+
+  return event.data.id;
+}

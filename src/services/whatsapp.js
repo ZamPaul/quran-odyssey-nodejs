@@ -25,7 +25,7 @@ export async function sendTrialBookingWhatsApp({
   phone,
   parentName,
   childName,
-  teacherName,
+  // teacherName,
   dateDisplay,    // "Wednesday, 28 May 2026"
   timeDisplay,    // "6:00 PM – 6:30 PM (BST)"
   courseLabel,
@@ -60,7 +60,7 @@ export async function sendTrialBookingWhatsApp({
           parameters: [
             { type: 'text', text: parentName   },  // {{1}}
             { type: 'text', text: childName    },  // {{2}}
-            { type: 'text', text: teacherName  },  // {{3}}
+            // { type: 'text', text: teacherName  },  // {{3}}
             { type: 'text', text: courseLabel  },  // {{4}}
             { type: 'text', text: dateDisplay  },  // {{5}}
             { type: 'text', text: timeDisplay  },  // {{6}}

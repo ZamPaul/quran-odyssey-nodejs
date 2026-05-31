@@ -7,7 +7,7 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 function trialBookingTemplate({
   parentName,
   childName,
-  teacherName,
+  // teacherName,
   courseLabel,
   dateDisplay,    // e.g. "Wednesday, 28 May 2026"
   timeDisplay,    // e.g. "6:00 PM – 6:30 PM (BST)"
@@ -72,7 +72,7 @@ function trialBookingTemplate({
                 ${[
                   ['👤 Student',  childName],
                   ['📖 Course',   courseLabel],
-                  ['👩‍🏫 Teacher',  teacherName],
+                  // ['👩‍🏫 Teacher',  teacherName],
                   ['📅 Date',     dateDisplay],
                   ['⏰ Time',     timeDisplay],
                   ['🆔 Ref',      bookingId.toUpperCase().slice(-8)],
@@ -89,6 +89,13 @@ function trialBookingTemplate({
                 </tr>`).join('')}
                 <tr><td style="padding:0 24px 16px;"></td></tr>
               </table>
+
+              <div style="background:#daf4fb;border-radius:10px;padding:16px 18px;margin-bottom:20px;border-left:4px solid #28b7d9;">
+                <div style="font-size:13px;font-weight:700;color:#0e6e8a;margin-bottom:4px;">What happens next?</div>
+                <div style="font-size:13px;color:#0e6e8a;line-height:1.7;">
+                  Your trial is confirmed. A teacher will be assigned and you'll receive class details within 24 hours.
+                </div>
+              </div>
 
               <!-- Zoom link notice -->
               <table width="100%" cellpadding="0" cellspacing="0" style="background:#e8f8fc;border-radius:10px;border:1px solid rgba(40,183,217,0.25);margin-bottom:28px;">
@@ -155,12 +162,13 @@ function trialBookingTemplate({
   `.trim();
 }
 
-// ─── Send Functions ────────────────────────────────────────
+// ─── Send Functions to ────────────────────────────────────────
+// trial confirmation to client
 export async function sendTrialBookingConfirmation({
   to,
   parentName,
   childName,
-  teacherName,
+  // teacherName,
   courseLabel,
   slotStart,        // UTC ISO string
   studentTimezone,  // IANA e.g. "Europe/London"
@@ -201,7 +209,7 @@ export async function sendTrialBookingConfirmation({
   const html = trialBookingTemplate({
     parentName,
     childName,
-    teacherName,
+    // teacherName,
     courseLabel,
     dateDisplay,
     timeDisplay,
@@ -229,8 +237,107 @@ export async function sendTrialBookingConfirmation({
   }
 }
 
+// ── Add this function to src/services/email.js ─────────────
+export async function sendAdminTrialNotification({
+  parentName,
+  childName,
+  parentEmail,
+  phone,
+  courseLabel,
+  genderPreference,
+  dateDisplay,
+  timeDisplay,
+}) {
+  const rawEmails = process.env.ADMIN_NOTIFICATION_EMAILS || '';
+  const adminEmails = rawEmails
+    .split(',')
+    .map(e => e.trim())
+    .filter(Boolean);
 
-// ─── Lead confirmation email ───────────────────────────────
+  if (adminEmails.length === 0) {
+    console.warn('⚠️  ADMIN_NOTIFICATION_EMAILS not set — skipping admin notification');
+    return;
+  }
+
+  const genderLabel = {
+    MALE:          'Male teacher preferred',
+    FEMALE:        'Female teacher preferred',
+    NO_PREFERENCE: 'No preference',
+  }[genderPreference] || 'No preference';
+
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"/><title>New Trial Booking</title></head>
+<body style="margin:0;padding:0;background:#f7f9fb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <div style="max-width:560px;margin:0 auto;padding:32px 16px;">
+
+    <div style="background:#0d2840;border-radius:16px 16px 0 0;padding:28px 32px;">
+      <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:#28b7d9;margin-bottom:6px;">
+        Quran Odyssey
+      </div>
+      <div style="font-size:22px;font-weight:800;color:#ffffff;">
+        🗓 New Trial Class Booked
+      </div>
+      <div style="font-size:13px;color:rgba(255,255,255,0.5);margin-top:4px;">
+        Action required — assign a teacher
+      </div>
+    </div>
+
+    <div style="background:#ffffff;border-radius:0 0 16px 16px;padding:32px;border:1px solid #e2e8f0;border-top:none;">
+
+      <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
+        ${[
+          ['Parent Name',        parentName],
+          ['Child Name',         childName],
+          ['Email',              parentEmail],
+          ['Phone / WhatsApp',   phone || '—'],
+          ['Course Interest',    courseLabel],
+          ['Teacher Preference', genderLabel],
+          ['Requested Date',     dateDisplay],
+          ['Requested Time',     timeDisplay],
+        ].map(([label, value], i) => `
+          <tr>
+            <td style="padding:10px 14px;background:${i%2===0?'#f7f9fb':'#ffffff'};border:1px solid #e2e8f0;font-size:12px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.04em;width:36%;">
+              ${label}
+            </td>
+            <td style="padding:10px 14px;background:${i%2===0?'#f7f9fb':'#ffffff'};border:1px solid #e2e8f0;font-size:13px;font-weight:600;color:#0f172a;">
+              ${value}
+            </td>
+          </tr>`).join('')}
+      </table>
+
+      <div style="background:#fff8e7;border-radius:10px;padding:16px 18px;border-left:4px solid #faa71a;">
+        <div style="font-size:13px;font-weight:700;color:#92400e;margin-bottom:4px;">
+          Next Step
+        </div>
+        <div style="font-size:13px;color:#92400e;line-height:1.6;">
+          1. Assign an appropriate teacher in Supabase → <strong>trial_bookings</strong> table → update <strong>teacherId</strong><br/>
+          2. Create a Zoom link and share it with the student<br/>
+          3. Event is visible in the <strong>Quran Odyssey — Trial Classes</strong> Google Calendar
+        </div>
+      </div>
+
+      <p style="font-size:12px;color:#94a3b8;margin-top:20px;border-top:1px solid #e2e8f0;padding-top:16px;">
+        Sent automatically by Quran Odyssey platform on booking confirmation.
+      </p>
+    </div>
+  </div>
+</body>
+</html>`;
+
+  const { error } = await resend.emails.send({
+    from:    'Quran Odyssey <bookings@quranodyssey.com>',
+    to:      adminEmails,
+    subject: `New Trial Booking — ${childName} | ${dateDisplay} at ${timeDisplay}`,
+    html,
+  });
+
+  if (error) throw new Error(`Admin notification failed: ${JSON.stringify(error)}`);
+  console.log(`✅ Admin trial notification sent to: ${adminEmails.join(', ')}`);
+}
+
+// ─── Lead confirmation email to client ───────────────────────────────
 export async function sendLeadConfirmationEmail({ to, firstName }) {
   const html = `
 <!DOCTYPE html>
@@ -335,7 +442,7 @@ export async function sendLeadConfirmationEmail({ to, firstName }) {
   }
 }
 
-// ─── Admin notification email ──────────────────────────────
+// ─── Admin notification email to admins ──────────────────────────────
 export async function sendAdminLeadNotification({ firstName, lastName, email, phone, leadId }) {
   const html = `
 <!DOCTYPE html>
@@ -389,7 +496,7 @@ export async function sendAdminLeadNotification({ firstName, lastName, email, ph
   try {
     const { data, error } = await resend.emails.send({
       from:    'Quran Odyssey System <bookings@quranodyssey.com>',
-      to:      ['info@quranodyssey.com', 'zamielpaul@gmail.com'],
+      to:      ['zamielpaul@gmail.com', 'irhaasif@gmail.com', 'waqarbasit61@gmail.com', 'mahilmalik23@gmail.com'],
       subject: `🔔 New Trial Lead: ${firstName} ${lastName}`,
       html,
     });
@@ -406,9 +513,7 @@ export async function sendAdminLeadNotification({ firstName, lastName, email, ph
   }
 }
 
-
 // Add this function to your existing src/services/email.js
-
 export async function sendProgressReport({
   parentEmail,
   parentName,
@@ -588,3 +693,4 @@ export async function sendProgressReport({
 
   return data;
 }
+
