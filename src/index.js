@@ -24,6 +24,7 @@ app.use(cors({
   origin: [
     'http://localhost:3000',
     'https://quranodyssey.com',
+    'https://www.quranodyssey.com',
     'https://quran-odyssey-nextjs.vercel.app',
     // production domain
     process.env.FRONTEND_URL,             // set on Railway
