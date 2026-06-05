@@ -4,6 +4,22 @@ import {prisma} from '../lib/prisma.js';
 import { requireTeacher } from '../middleware/teacherAuth.js';
 import { sendProgressReport } from '../services/email.js';
 
+// At the top of teacher.js, add:
+import {
+  cleanStr,
+  requireStr,
+  cleanInt,
+  cleanFutureDate,
+  requireEnum,
+  optionalEnum,
+  collect,
+} from '../middleware/sanitize.js';
+
+import {
+  writeLimiter,
+  heavyLimiter,
+} from '../middleware/rateLimiter.js';
+
 const router = express.Router();
 
 // Apply requireTeacher to ALL routes in this file
@@ -607,22 +623,30 @@ router.get('/assignments/:id', async (req, res) => {
 // POST /api/teacher/assignments
 // Create a new assignment for a student
 // ─────────────────────────────────────────────────────────
-router.post('/assignments', async (req, res) => {
-  const {
-    studentId,
-    enrollmentId,
-    title,
-    description,
-    dueDate,
-    courseType,
-  } = req.body;
+router.post('/assignments', writeLimiter, async (req, res) => {
+  // const {
+  //   studentId,
+  //   enrollmentId,
+  //   title,
+  //   description,
+  //   dueDate,
+  //   courseType,
+  // } = req.body;
 
   // Validation
   const errors = [];
-  if (!studentId)  errors.push('studentId is required');
-  if (!title)      errors.push('title is required');
-  if (!dueDate)    errors.push('dueDate is required');
-  if (!courseType) errors.push('courseType is required');
+  const studentId   = collect(errors, requireStr(req.body.studentId,  'studentId',  50));
+  const title       = collect(errors, requireStr(req.body.title,       'title',      200));
+  const courseType  = collect(errors, requireEnum(req.body.courseType, [
+    'NOORANI_QAIDA','QURAN_RECITATION','TAJWEED','HIFZ','ISLAMIC_STUDIES','ONE_TO_ONE'
+  ], 'courseType'));
+  const dueDate     = collect(errors, cleanFutureDate(req.body.dueDate, 'dueDate'));
+  const description = cleanStr(req.body.description, 1000);
+  const enrollmentId = cleanStr(req.body.enrollmentId, 50);
+  // if (!studentId)  errors.push('studentId is required');
+  // if (!title)      errors.push('title is required');
+  // if (!dueDate)    errors.push('dueDate is required');
+  // if (!courseType) errors.push('courseType is required');
 
   if (errors.length > 0) {
     return res.status(400).json({ error: 'Validation failed', details: errors });
@@ -647,6 +671,16 @@ router.post('/assignments', async (req, res) => {
       },
     });
 
+    // handling duplicate heree
+    const duplicate = await prisma.assignment.findFirst({
+      where: { teacherId: req.teacher.id, studentId, title },
+    });
+
+    if (duplicate) return res.status(409).json({
+      error: `An assignment titled "${title}" already exists for this student`,
+      assignmentId: duplicate.id,
+    });
+
     if (!enrollment) {
       return res.status(404).json({
         error: 'Student not found or not actively enrolled with you',
@@ -658,9 +692,9 @@ router.post('/assignments', async (req, res) => {
         teacherId:    req.teacher.id,
         studentId,
         enrollmentId: enrollmentId || enrollment.id,
-        title:        title.trim(),
-        description:  description?.trim() || null,
-        dueDate:      due,
+        title,
+        description,
+        dueDate,
         courseType,
         status:       'PENDING',
       },
@@ -691,46 +725,92 @@ router.post('/assignments', async (req, res) => {
 // Update assignment: title, description, dueDate, status
 // Teachers can edit anything except the submission itself
 // ─────────────────────────────────────────────────────────
-router.patch('/assignments/:id', async (req, res) => {
-  const { id } = req.params;
-  const { title, description, dueDate, status } = req.body;
+// router.patch('/assignments/:id', writeLimiter, async (req, res) => {
+//   const { id } = req.params;
+//   const { title, description, dueDate, status } = req.body;
 
-  if (!title && !description && !dueDate && !status) {
-    return res.status(400).json({
-      error: 'Provide at least one field to update',
-    });
+//   if (!title && !description && !dueDate && !status) {
+//     return res.status(400).json({
+//       error: 'Provide at least one field to update',
+//     });
+//   }
+
+//   const validStatuses = ['PENDING', 'OVERDUE'];
+//   if (status && !validStatuses.includes(status)) {
+//     return res.status(400).json({
+//       error: `Teachers can only set status to PENDING or OVERDUE. Got: ${status}`,
+//     });
+//   }
+
+//   try {
+//     const existing = await prisma.assignment.findUnique({ where: { id } });
+
+//     if (!existing || existing.teacherId !== req.teacher.id) {
+//       return res.status(404).json({ error: 'Assignment not found' });
+//     }
+
+//     const updateData = {};
+//     if (title !== undefined)       updateData.title       = title.trim();
+//     if (description !== undefined) updateData.description = description?.trim() || null;
+//     if (status !== undefined)      updateData.status      = status;
+//     if (dueDate !== undefined) {
+//       const due = new Date(dueDate);
+//       if (isNaN(due.getTime())) {
+//         return res.status(400).json({ error: 'Invalid dueDate format' });
+//       }
+//       updateData.dueDate = due;
+//     }
+
+//     const updated = await prisma.assignment.update({
+//       where:   { id },
+//       data:    updateData,
+//       include: { student: { select: { id: true, email: true, studentProfile: { select: { childName: true } } } }, submission: true },
+//     });
+
+//     return res.json({ assignment: updated });
+//   } catch (err) {
+//     console.error('Assignment update failed:', err);
+//     return res.status(500).json({ error: 'Failed to update assignment' });
+//   }
+// });
+
+router.patch('/assignments/:id', writeLimiter, async (req, res) => {
+  const { id } = req.params;
+  const title       = req.body.title       !== undefined ? cleanStr(req.body.title,       200) : undefined;
+  const description = req.body.description !== undefined ? cleanStr(req.body.description, 1000) : undefined;
+  const status      = req.body.status;
+  let   dueDate;
+
+  if (req.body.dueDate !== undefined) {
+    const result = cleanFutureDate(req.body.dueDate, 'dueDate');
+    if (result.error) return res.status(400).json({ error: result.error });
+    dueDate = result.value;
   }
 
-  const validStatuses = ['PENDING', 'OVERDUE'];
+  if (title === undefined && description === undefined && dueDate === undefined && !status) {
+    return res.status(400).json({ error: 'Provide at least one field to update' });
+  }
+
+  const validStatuses = ['PENDING','OVERDUE'];
   if (status && !validStatuses.includes(status)) {
-    return res.status(400).json({
-      error: `Teachers can only set status to PENDING or OVERDUE. Got: ${status}`,
-    });
+    return res.status(400).json({ error: `Teachers can only set status to PENDING or OVERDUE` });
   }
 
   try {
-    const existing = await prisma.assignment.findUnique({ where: { id } });
-
+    const existing = await prisma.assignment.findUnique({ where:{ id } });
     if (!existing || existing.teacherId !== req.teacher.id) {
       return res.status(404).json({ error: 'Assignment not found' });
     }
 
     const updateData = {};
-    if (title !== undefined)       updateData.title       = title.trim();
-    if (description !== undefined) updateData.description = description?.trim() || null;
-    if (status !== undefined)      updateData.status      = status;
-    if (dueDate !== undefined) {
-      const due = new Date(dueDate);
-      if (isNaN(due.getTime())) {
-        return res.status(400).json({ error: 'Invalid dueDate format' });
-      }
-      updateData.dueDate = due;
-    }
+    if (title       !== undefined) updateData.title       = title;
+    if (description !== undefined) updateData.description = description;
+    if (status      !== undefined) updateData.status      = status;
+    if (dueDate     !== undefined) updateData.dueDate     = dueDate;
 
     const updated = await prisma.assignment.update({
-      where:   { id },
-      data:    updateData,
-      include: { student: { select: { id: true, email: true, studentProfile: { select: { childName: true } } } }, submission: true },
+      where: { id }, data: updateData,
+      include: { student:{ select:{ id:true, email:true, studentProfile:{ select:{ childName:true } } } }, submission:true },
     });
 
     return res.json({ assignment: updated });
@@ -778,44 +858,86 @@ router.delete('/assignments/:id', async (req, res) => {
 // Grade a submitted assignment
 // Body: { grade, feedback }
 // ─────────────────────────────────────────────────────────
-router.post('/assignments/:id/grade', async (req, res) => {
+// router.post('/assignments/:id/grade', async (req, res) => {
+//   const { id } = req.params;
+//   const { grade, feedback } = req.body;
+
+//   if (!grade) {
+//     return res.status(400).json({ error: 'grade is required' });
+//   }
+
+//   // Grade format: any non-empty string — "Excellent", "8/10", "B+", "MashaAllah"
+//   if (typeof grade !== 'string' || grade.trim().length === 0) {
+//     return res.status(400).json({ error: 'grade must be a non-empty string' });
+//   }
+
+//   try {
+//     const assignment = await prisma.assignment.findUnique({
+//       where:   { id },
+//       include: { submission: true },
+//     });
+
+//     if (!assignment || assignment.teacherId !== req.teacher.id) {
+//       return res.status(404).json({ error: 'Assignment not found' });
+//     }
+
+//     if (!assignment.submission) {
+//       return res.status(409).json({
+//         error: 'Cannot grade an assignment with no submission yet',
+//       });
+//     }
+
+//     // Update submission with grade + feedback, and assignment status to GRADED
+//     const [updatedSubmission] = await prisma.$transaction([
+//       prisma.assignmentSubmission.update({
+//         where: { assignmentId: id },
+//         data: {
+//           grade:    grade.trim(),
+//           feedback: feedback?.trim() || null,
+//           gradedAt: new Date(),
+//         },
+//       }),
+//       prisma.assignment.update({
+//         where: { id },
+//         data:  { status: 'GRADED' },
+//       }),
+//     ]);
+
+//     console.log(`✅ Assignment ${id} graded: ${grade}`);
+//     return res.json({
+//       message:    'Assignment graded successfully',
+//       submission: updatedSubmission,
+//     });
+//   } catch (err) {
+//     console.error('Grading failed:', err);
+//     return res.status(500).json({ error: 'Failed to grade assignment' });
+//   }
+// });
+
+router.post('/assignments/:id/grade', heavyLimiter, async (req, res) => {
   const { id } = req.params;
-  const { grade, feedback } = req.body;
+  const grade    = cleanStr(req.body.grade,    100);
+  const feedback = cleanStr(req.body.feedback, 500);
 
-  if (!grade) {
-    return res.status(400).json({ error: 'grade is required' });
-  }
-
-  // Grade format: any non-empty string — "Excellent", "8/10", "B+", "MashaAllah"
-  if (typeof grade !== 'string' || grade.trim().length === 0) {
-    return res.status(400).json({ error: 'grade must be a non-empty string' });
-  }
+  if (!grade) return res.status(400).json({ error: 'grade is required and must be non-empty' });
 
   try {
-    const assignment = await prisma.assignment.findUnique({
-      where:   { id },
-      include: { submission: true },
-    });
-
+    const assignment = await prisma.assignment.findUnique({ where:{ id }, include:{ submission:true } });
     if (!assignment || assignment.teacherId !== req.teacher.id) {
       return res.status(404).json({ error: 'Assignment not found' });
     }
-
     if (!assignment.submission) {
-      return res.status(409).json({
-        error: 'Cannot grade an assignment with no submission yet',
-      });
+      return res.status(409).json({ error: 'Cannot grade an assignment with no submission yet' });
+    }
+    if (assignment.submission.gradedAt) {
+      // Allow re-grading but log it
+      console.log(`⚠️  Re-grading assignment ${id} by teacher ${req.teacher.id}`);
     }
 
-    // Update submission with grade + feedback, and assignment status to GRADED
     const [updatedSubmission] = await prisma.$transaction([
       prisma.assignmentSubmission.update({
         where: { assignmentId: id },
-        data: {
-          grade:    grade.trim(),
-          feedback: feedback?.trim() || null,
-          gradedAt: new Date(),
-        },
+        data:  { grade, feedback, gradedAt: new Date() },
       }),
       prisma.assignment.update({
         where: { id },
@@ -824,10 +946,7 @@ router.post('/assignments/:id/grade', async (req, res) => {
     ]);
 
     console.log(`✅ Assignment ${id} graded: ${grade}`);
-    return res.json({
-      message:    'Assignment graded successfully',
-      submission: updatedSubmission,
-    });
+    return res.json({ message: 'Assignment graded', submission: updatedSubmission });
   } catch (err) {
     console.error('Grading failed:', err);
     return res.status(500).json({ error: 'Failed to grade assignment' });
@@ -951,104 +1070,170 @@ router.get('/reports/:id', async (req, res) => {
 // POST /api/teacher/reports
 // Create a new progress report (starts as DRAFT)
 // ─────────────────────────────────────────────────────────
-router.post('/reports', async (req, res) => {
-  const {
-    studentId,
-    enrollmentId,
-    period,
-    courseType,
-    overallRating,
-    tajweedProgress,
-    recitationNotes,
-    behaviourNotes,
-    homeworkNotes,
-    teacherMessage,
-    nextSteps,
-  } = req.body;
+// router.post('/reports', async (req, res) => {
+//   const {
+//     studentId,
+//     enrollmentId,
+//     period,
+//     courseType,
+//     overallRating,
+//     tajweedProgress,
+//     recitationNotes,
+//     behaviourNotes,
+//     homeworkNotes,
+//     teacherMessage,
+//     nextSteps,
+//   } = req.body;
 
-  // Required field validation
-  const errors = [];
-  if (!studentId)  errors.push('studentId is required');
-  if (!period)     errors.push('period is required (e.g. "Week 12")');
-  if (!courseType) errors.push('courseType is required');
+//   // Required field validation
+//   const errors = [];
+//   if (!studentId)  errors.push('studentId is required');
+//   if (!period)     errors.push('period is required (e.g. "Week 12")');
+//   if (!courseType) errors.push('courseType is required');
 
-  if (errors.length > 0) {
-    return res.status(400).json({ error: 'Validation failed', details: errors });
-  }
+//   if (errors.length > 0) {
+//     return res.status(400).json({ error: 'Validation failed', details: errors });
+//   }
 
-  // Validate rating range if provided
-  if (overallRating !== undefined && overallRating !== null) {
-    const rating = Number(overallRating);
-    if (isNaN(rating) || rating < 1 || rating > 5) {
-      return res.status(400).json({
-        error: 'overallRating must be a number between 1 and 5',
-      });
-    }
+//   // Validate rating range if provided
+//   if (overallRating !== undefined && overallRating !== null) {
+//     const rating = Number(overallRating);
+//     if (isNaN(rating) || rating < 1 || rating > 5) {
+//       return res.status(400).json({
+//         error: 'overallRating must be a number between 1 and 5',
+//       });
+//     }
+//   }
+
+//   try {
+//     // Verify student is enrolled with this teacher
+//     const enrollment = await prisma.enrollment.findFirst({
+//       where: {
+//         teacherId: req.teacher.id,
+//         studentId,
+//         status:    'ACTIVE',
+//       },
+//     });
+
+//     if (!enrollment) {
+//       return res.status(404).json({
+//         error: 'Student not found or not actively enrolled with you',
+//       });
+//     }
+
+//     // Check for duplicate report — same student + period + course
+//     const duplicate = await prisma.progressReport.findFirst({
+//       where: {
+//         teacherId:  req.teacher.id,
+//         studentId,
+//         period:     period.trim(),
+//         courseType,
+//       },
+//     });
+
+//     if (duplicate) {
+//       return res.status(409).json({
+//         error:    `A report for "${period}" already exists for this student`,
+//         reportId: duplicate.id,
+//       });
+//     }
+
+//     const report = await prisma.progressReport.create({
+//       data: {
+//         teacherId:    req.teacher.id,
+//         studentId,
+//         enrollmentId: enrollmentId || enrollment.id,
+//         period:       period.trim(),
+//         courseType,
+//         status:       'DRAFT',
+//         overallRating:   overallRating ? Number(overallRating) : null,
+//         tajweedProgress: tajweedProgress?.trim() || null,
+//         recitationNotes: recitationNotes?.trim() || null,
+//         behaviourNotes:  behaviourNotes?.trim()  || null,
+//         homeworkNotes:   homeworkNotes?.trim()   || null,
+//         teacherMessage:  teacherMessage?.trim()  || null,
+//         nextSteps:       nextSteps?.trim()        || null,
+//       },
+//       include: {
+//         student: {
+//           select: {
+//             id:    true,
+//             email: true,
+//             studentProfile: {
+//               select: { childName: true, parentName: true },
+//             },
+//           },
+//         },
+//       },
+//     });
+
+//     console.log(`✅ Progress report created: ${report.id} — ${period}`);
+//     return res.status(201).json({ report });
+//   } catch (err) {
+//     console.error('Report creation failed:', err);
+//     return res.status(500).json({ error: 'Failed to create report' });
+//   }
+// });
+
+router.post('/reports', writeLimiter, async (req, res) => {
+  const errs = [];
+  const studentId  = collect(errs, requireStr(req.body.studentId,  'studentId',  50));
+  const period     = collect(errs, requireStr(req.body.period,      'period',     100));
+  const courseType = collect(errs, requireEnum(req.body.courseType, [
+    'NOORANI_QAIDA','QURAN_RECITATION','TAJWEED','HIFZ','ISLAMIC_STUDIES','ONE_TO_ONE'
+  ], 'courseType'));
+
+  if (errs.length) return res.status(400).json({ error: 'Validation failed', details: errs });
+
+  const overallRating   = req.body.overallRating !== undefined ? cleanInt(req.body.overallRating, 1, 5) : null;
+  const tajweedProgress = cleanStr(req.body.tajweedProgress, 2000);
+  const recitationNotes = cleanStr(req.body.recitationNotes, 2000);
+  const behaviourNotes  = cleanStr(req.body.behaviourNotes,  2000);
+  const homeworkNotes   = cleanStr(req.body.homeworkNotes,   2000);
+  const teacherMessage  = cleanStr(req.body.teacherMessage,  2000);
+  const nextSteps       = cleanStr(req.body.nextSteps,       2000);
+  const enrollmentId    = cleanStr(req.body.enrollmentId,    50);
+
+  if (req.body.overallRating !== undefined && req.body.overallRating !== null && overallRating === null) {
+    return res.status(400).json({ error: 'overallRating must be a number between 1 and 5' });
   }
 
   try {
-    // Verify student is enrolled with this teacher
     const enrollment = await prisma.enrollment.findFirst({
-      where: {
-        teacherId: req.teacher.id,
-        studentId,
-        status:    'ACTIVE',
-      },
+      where: { teacherId: req.teacher.id, studentId, status: 'ACTIVE' },
     });
+    if (!enrollment) return res.status(404).json({ error: 'Student not found or not actively enrolled with you' });
 
-    if (!enrollment) {
-      return res.status(404).json({
-        error: 'Student not found or not actively enrolled with you',
-      });
-    }
-
-    // Check for duplicate report — same student + period + course
     const duplicate = await prisma.progressReport.findFirst({
-      where: {
-        teacherId:  req.teacher.id,
-        studentId,
-        period:     period.trim(),
-        courseType,
-      },
+      where: { teacherId: req.teacher.id, studentId, period, courseType },
     });
-
-    if (duplicate) {
-      return res.status(409).json({
-        error:    `A report for "${period}" already exists for this student`,
-        reportId: duplicate.id,
-      });
-    }
+    if (duplicate) return res.status(409).json({
+      error:    `A report for "${period}" already exists for this student`,
+      reportId: duplicate.id,
+    });
 
     const report = await prisma.progressReport.create({
       data: {
         teacherId:    req.teacher.id,
         studentId,
         enrollmentId: enrollmentId || enrollment.id,
-        period:       period.trim(),
+        period,
         courseType,
-        status:       'DRAFT',
-        overallRating:   overallRating ? Number(overallRating) : null,
-        tajweedProgress: tajweedProgress?.trim() || null,
-        recitationNotes: recitationNotes?.trim() || null,
-        behaviourNotes:  behaviourNotes?.trim()  || null,
-        homeworkNotes:   homeworkNotes?.trim()   || null,
-        teacherMessage:  teacherMessage?.trim()  || null,
-        nextSteps:       nextSteps?.trim()        || null,
+        status:          'DRAFT',
+        overallRating,
+        tajweedProgress,
+        recitationNotes,
+        behaviourNotes,
+        homeworkNotes,
+        teacherMessage,
+        nextSteps,
       },
       include: {
-        student: {
-          select: {
-            id:    true,
-            email: true,
-            studentProfile: {
-              select: { childName: true, parentName: true },
-            },
-          },
-        },
+        student: { select:{ id:true, email:true, studentProfile:{ select:{ childName:true, parentName:true } } } },
       },
     });
 
-    console.log(`✅ Progress report created: ${report.id} — ${period}`);
+    console.log(`✅ Report created: ${report.id} — ${period}`);
     return res.status(201).json({ report });
   } catch (err) {
     console.error('Report creation failed:', err);
@@ -1454,55 +1639,142 @@ router.get('/attendance/session/:sessionId', async (req, res) => {
 // Mark attendance for a session
 // Body: { sessionId, status, notes }
 // ─────────────────────────────────────────────────────────
-router.post('/attendance', async (req, res) => {
-  const { sessionId, status, notes } = req.body;
+// router.post('/attendance', async (req, res) => {
+//   const { sessionId, status, notes } = req.body;
 
-  // Validation
-  const errors = [];
-  if (!sessionId) errors.push('sessionId is required');
-  if (!status)    errors.push('status is required');
+//   // Validation
+//   const errors = [];
+//   if (!sessionId) errors.push('sessionId is required');
+//   if (!status)    errors.push('status is required');
 
-  const validStatuses = ['PRESENT', 'LATE', 'ABSENT', 'EXCUSED'];
-  if (status && !validStatuses.includes(status)) {
-    errors.push(`status must be one of: ${validStatuses.join(', ')}`);
-  }
+//   const validStatuses = ['PRESENT', 'LATE', 'ABSENT', 'EXCUSED'];
+//   if (status && !validStatuses.includes(status)) {
+//     errors.push(`status must be one of: ${validStatuses.join(', ')}`);
+//   }
 
-  if (errors.length > 0) {
-    return res.status(400).json({ error: 'Validation failed', details: errors });
-  }
+//   if (errors.length > 0) {
+//     return res.status(400).json({ error: 'Validation failed', details: errors });
+//   }
+
+//   try {
+//     // Verify session belongs to this teacher
+//     const session = await prisma.classSession.findUnique({
+//       where: { id: sessionId },
+//     });
+
+//     if (!session || session.teacherId !== req.teacher.id) {
+//       return res.status(404).json({ error: 'Session not found' });
+//     }
+
+//     // Check not already marked
+//     const existing = await prisma.attendanceRecord.findUnique({
+//       where: { sessionId },
+//     });
+
+//     if (existing) {
+//       return res.status(409).json({
+//         error:      'Attendance already marked for this session. Use PATCH to update.',
+//         recordId:   existing.id,
+//         currentStatus: existing.status,
+//       });
+//     }
+
+//     // Find the enrollment for this teacher + student combination
+//     const enrollment = await prisma.enrollment.findFirst({
+//       where: {
+//         teacherId: req.teacher.id,
+//         studentId: session.studentId,
+//       },
+//     });
+
+//     // Create attendance record and update session status in a transaction
+//     const [record] = await prisma.$transaction([
+//       prisma.attendanceRecord.create({
+//         data: {
+//           teacherId:    req.teacher.id,
+//           studentId:    session.studentId,
+//           sessionId,
+//           enrollmentId: enrollment?.id || null,
+//           status,
+//           notes:        notes?.trim() || null,
+//         },
+//         include: {
+//           student: {
+//             select: {
+//               id:    true,
+//               email: true,
+//               studentProfile: {
+//                 select: { childName: true },
+//               },
+//             },
+//           },
+//           session: {
+//             select: {
+//               id:          true,
+//               scheduledAt: true,
+//               courseType:  true,
+//             },
+//           },
+//         },
+//       }),
+
+//       // Auto-update session status based on attendance
+//       // PRESENT/LATE → COMPLETED, ABSENT/EXCUSED → MISSED
+//       prisma.classSession.update({
+//         where: { id: sessionId },
+//         data: {
+//           status: ['PRESENT', 'LATE'].includes(status) ? 'COMPLETED' : 'MISSED',
+//         },
+//       }),
+//     ]);
+
+//     console.log(
+//       `✅ Attendance marked: ${record.student.studentProfile?.childName || 'Student'} — ${status}`
+//     );
+//     return res.status(201).json({ record });
+//   } catch (err) {
+//     // Handle unique constraint violation gracefully
+//     if (err.code === 'P2002') {
+//       return res.status(409).json({
+//         error: 'Attendance already marked for this session',
+//       });
+//     }
+//     console.error('Attendance marking failed:', err);
+//     return res.status(500).json({ error: 'Failed to mark attendance' });
+//   }
+// });
+
+router.post('/attendance', writeLimiter, async (req, res) => {
+  const errs = [];
+  const sessionId = collect(errs, requireStr(req.body.sessionId, 'sessionId', 50));
+  const status    = collect(errs, requireEnum(
+    req.body.status,
+    ['PRESENT','LATE','ABSENT','EXCUSED'],
+    'status'
+  ));
+  const notes = cleanStr(req.body.notes, 500);
+
+  if (errs.length) return res.status(400).json({ error: 'Validation failed', details: errs });
 
   try {
-    // Verify session belongs to this teacher
-    const session = await prisma.classSession.findUnique({
-      where: { id: sessionId },
-    });
-
+    const session = await prisma.classSession.findUnique({ where:{ id: sessionId } });
     if (!session || session.teacherId !== req.teacher.id) {
       return res.status(404).json({ error: 'Session not found' });
     }
 
-    // Check not already marked
-    const existing = await prisma.attendanceRecord.findUnique({
-      where: { sessionId },
-    });
-
+    const existing = await prisma.attendanceRecord.findUnique({ where:{ sessionId } });
     if (existing) {
       return res.status(409).json({
-        error:      'Attendance already marked for this session. Use PATCH to update.',
-        recordId:   existing.id,
+        error:         'Attendance already marked. Use PATCH to update.',
+        recordId:      existing.id,
         currentStatus: existing.status,
       });
     }
 
-    // Find the enrollment for this teacher + student combination
     const enrollment = await prisma.enrollment.findFirst({
-      where: {
-        teacherId: req.teacher.id,
-        studentId: session.studentId,
-      },
+      where: { teacherId: req.teacher.id, studentId: session.studentId },
     });
 
-    // Create attendance record and update session status in a transaction
     const [record] = await prisma.$transaction([
       prisma.attendanceRecord.create({
         data: {
@@ -1511,48 +1783,24 @@ router.post('/attendance', async (req, res) => {
           sessionId,
           enrollmentId: enrollment?.id || null,
           status,
-          notes:        notes?.trim() || null,
+          notes,
         },
         include: {
-          student: {
-            select: {
-              id:    true,
-              email: true,
-              studentProfile: {
-                select: { childName: true },
-              },
-            },
-          },
-          session: {
-            select: {
-              id:          true,
-              scheduledAt: true,
-              courseType:  true,
-            },
-          },
+          student: { select:{ id:true, email:true, studentProfile:{ select:{ childName:true } } } },
+          session: { select:{ id:true, scheduledAt:true, courseType:true } },
         },
       }),
-
-      // Auto-update session status based on attendance
-      // PRESENT/LATE → COMPLETED, ABSENT/EXCUSED → MISSED
       prisma.classSession.update({
         where: { id: sessionId },
-        data: {
-          status: ['PRESENT', 'LATE'].includes(status) ? 'COMPLETED' : 'MISSED',
-        },
+        data:  { status: ['PRESENT','LATE'].includes(status) ? 'COMPLETED' : 'MISSED' },
       }),
     ]);
 
-    console.log(
-      `✅ Attendance marked: ${record.student.studentProfile?.childName || 'Student'} — ${status}`
-    );
+    console.log(`✅ Attendance: ${record.student.studentProfile?.childName || 'Student'} — ${status}`);
     return res.status(201).json({ record });
   } catch (err) {
-    // Handle unique constraint violation gracefully
     if (err.code === 'P2002') {
-      return res.status(409).json({
-        error: 'Attendance already marked for this session',
-      });
+      return res.status(409).json({ error: 'Attendance already marked for this session' });
     }
     console.error('Attendance marking failed:', err);
     return res.status(500).json({ error: 'Failed to mark attendance' });
