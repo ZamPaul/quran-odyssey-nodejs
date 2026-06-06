@@ -48,7 +48,7 @@ router.post("/clerk", async (req, res) => {
     // Admin sets this when creating teacher accounts
     // Defaults to STUDENT for all self-registered users
     const rawRole    = data.public_metadata?.role || 'STUDENT';
-    const validRoles = ['STUDENT', 'TEACHER', 'ADMIN'];
+    const validRoles = ['STUDENT', 'TEACHER', 'ADMIN', 'PARENT'];
     const role       = validRoles.includes(rawRole) ? rawRole : 'STUDENT';
 
     try {
@@ -58,7 +58,24 @@ router.post("/clerk", async (req, res) => {
           email: email,      
           role,
         },
-      });  
+      });
+
+      // If role is PARENT, create a stub ParentProfile
+      if (role === 'PARENT') {
+        try {
+          await prisma.parentProfile.create({
+            data: {
+              userId: user.id,
+              name: email.split('@')[0], // admin will fill in real name via Supabase
+            },
+          });
+          console.log(`✅ ParentProfile stub created for: ${email}`);
+        } catch (err) {
+          // Don't crash the webhook — profile can be created manually
+          console.error('⚠️  ParentProfile stub creation failed:', err.message);
+        }
+      }
+        
       console.log(`✅ User created in DB: ${user.email} (${user.id})`);
     } catch (err) {
       // P2002 = unique constraint violation — user already exists

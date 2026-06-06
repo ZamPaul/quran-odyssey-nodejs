@@ -15,6 +15,7 @@ enum Role {
   STUDENT
   TEACHER
   ADMIN
+  PARENT
 }
 
 enum BookingStatus {
@@ -87,6 +88,16 @@ enum AttendanceStatus {
   EXCUSED
 }
 
+enum EnrollmentRequestStatus {
+  PENDING
+  UNDER_REVIEW
+  APPROVED
+  AWAITING_PAYMENT
+  ACTIVE
+  REJECTED
+  CANCELLED
+}
+
 // ─────────────────────────────────────────────────────────
 // USER
 // ─────────────────────────────────────────────────────────
@@ -111,6 +122,11 @@ model User {
   attendanceRecords     AttendanceRecord[]     @relation("StudentAttendance")
   teacher               Teacher?               @relation("TeacherUser")
   assignmentSubmissions AssignmentSubmission[]
+
+  enrollmentRequests EnrollmentRequest[]
+  parentProfile      ParentProfile?
+  parentLinks        ParentChildLink[]   @relation("ParentLinks")
+  childLinks         ParentChildLink[]   @relation("ChildLinks")
 
   @@map("users")
 }
@@ -394,4 +410,63 @@ model AttendanceRecord {
   @@index([teacherId])
   @@index([studentId])
   @@index([sessionId])
+}
+
+// ─────────────────────────────────────────────────────────
+// ENROLLMENT REQUEST — MODULE 3
+// ─────────────────────────────────────────────────────────
+model EnrollmentRequest {
+  id               String                  @id @default(cuid())
+  studentId        String
+  courseType       CourseInterest
+  genderPreference String?
+  preferredDays    String[]
+  preferredTime    String?
+  message          String?
+  status           EnrollmentRequestStatus @default(PENDING)
+  adminNotes       String?
+  rejectionReason  String?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+
+  student User @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([studentId])
+  @@map("enrollment_requests")
+}
+
+// ─────────────────────────────────────────────────────────
+// PARENT PROFILE — MODULE 3
+// ─────────────────────────────────────────────────────────
+model ParentProfile {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  name      String
+  phone     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("parent_profiles")
+}
+
+// ─────────────────────────────────────────────────────────
+// PARENT CHILD LINK — MODULE 3
+// ─────────────────────────────────────────────────────────
+model ParentChildLink {
+  id           String   @id @default(cuid())
+  parentUserId String
+  childUserId  String
+  relationship String   @default("PARENT")
+  isPrimary    Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  parent User @relation("ParentLinks", fields: [parentUserId], references: [id], onDelete: Cascade)
+  child  User @relation("ChildLinks",  fields: [childUserId],  references: [id], onDelete: Cascade)
+
+  @@unique([parentUserId, childUserId])
+  @@index([parentUserId])
+  @@index([childUserId])
+  @@map("parent_child_links")
 }
