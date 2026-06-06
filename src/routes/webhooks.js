@@ -91,7 +91,7 @@ router.post("/clerk", async (req, res) => {
       }
 
       if (Object.keys(updateData).length > 0) {
-        await prisma.user.update({
+        const user = await prisma.user.update({
           where: { clerkId: data.id },
           data:  updateData,
         });
