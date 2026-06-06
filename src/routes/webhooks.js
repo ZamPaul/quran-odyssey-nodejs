@@ -63,24 +63,9 @@ router.post("/clerk", async (req, res) => {
           role,
         },
       });
-
-      // If role is PARENT, create a stub ParentProfile
-      if (role === 'PARENT') {
-        try {
-          await prisma.parentProfile.create({
-            data: {
-              userId: user.id,
-              name: email.split('@')[0], // admin will fill in real name via Supabase
-            },
-          });
-          console.log(`✅ ParentProfile stub created for: ${email}`);
-        } catch (err) {
-          // Don't crash the webhook — profile can be created manually
-          console.error('⚠️  ParentProfile stub creation failed:', err.message);
-        }
-      }
         
       console.log(`✅ User created in DB: ${user.email} (${user.id})`);
+
     } catch (err) {
       // P2002 = unique constraint violation — user already exists
       // This can happen if the webhook fires twice (Clerk retries on timeout)
@@ -101,7 +86,7 @@ router.post("/clerk", async (req, res) => {
     try {
       const updateData = {};
       if (email)   updateData.email = email;
-      if (rawRole && ['STUDENT', 'TEACHER', 'ADMIN'].includes(rawRole)) {
+      if (rawRole && ['STUDENT', 'TEACHER', 'ADMIN', 'PARENT'].includes(rawRole)) {
         updateData.role = rawRole;
       }
 
@@ -112,6 +97,23 @@ router.post("/clerk", async (req, res) => {
         });
         console.log(`✅ User updated: ${data.id}`);
       }
+
+      // If role is PARENT, create a stub ParentProfile
+      if (rawRole === 'PARENT') {
+        try {
+          await prisma.parentProfile.create({
+            data: {
+              userId: user.id,
+              name: user.email.split('@')[0], // admin will fill in real name via Supabase
+            },
+          });
+          console.log(`✅ ParentProfile stub created for: ${email}`);
+        } catch (err) {
+          // Don't crash the webhook — profile can be created manually
+          console.error('⚠️  ParentProfile stub creation failed:', err.message);
+        }
+      }
+
     } catch (err) {
       console.error('❌ Failed to update user:', err);
     }
