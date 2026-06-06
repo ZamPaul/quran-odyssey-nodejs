@@ -2,6 +2,7 @@
 import express from "express";
 import { Webhook } from "svix";
 import { prisma } from "../lib/prisma.js";
+import e from "express";
 
 const router = express.Router();
 
@@ -50,6 +51,9 @@ router.post("/clerk", async (req, res) => {
     const rawRole    = data.public_metadata?.role || 'STUDENT';
     const validRoles = ['STUDENT', 'TEACHER', 'ADMIN', 'PARENT'];
     const role       = validRoles.includes(rawRole) ? rawRole : 'STUDENT';
+
+    console.log("raw role:", rawRole)
+    console.log("new role:", role)
 
     try {
       const user = await prisma.user.create({
