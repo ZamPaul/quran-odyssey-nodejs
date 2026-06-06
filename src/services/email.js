@@ -694,3 +694,223 @@ export async function sendProgressReport({
   return data;
 }
 
+// ─────────────────────────────────────────────────────────
+// ENROLLMENT EMAILS — append these to src/services/email.js
+// ─────────────────────────────────────────────────────────
+
+// ─── sendEnrollmentAdminNotification ─────────────────────
+// Fired when a student submits an enrollment application.
+// Sends to ADMIN_NOTIFICATION_EMAILS env var.
+export async function sendEnrollmentAdminNotification({
+  applicationId,
+  parentName,
+  childName,
+  parentEmail,
+  phone,
+  courseLabel,
+  genderPreference,
+  preferredDays,
+  preferredTime,
+  message,
+}) {
+  const rawEmails   = process.env.ADMIN_NOTIFICATION_EMAILS || '';
+  const adminEmails = rawEmails.split(',').map(e => e.trim()).filter(Boolean);
+
+  if (adminEmails.length === 0) {
+    console.warn('⚠️  ADMIN_NOTIFICATION_EMAILS not set — skipping enrollment admin notification');
+    return;
+  }
+
+  const genderLabel = { MALE: 'Male teacher preferred', FEMALE: 'Female teacher preferred', NO_PREFERENCE: 'No preference' }[genderPreference] || 'No preference';
+  const timeLabel   = { MORNING: 'Morning (9am–12pm)', AFTERNOON: 'Afternoon (12pm–5pm)', EVENING: 'Evening (5pm–9pm)' }[preferredTime] || preferredTime;
+
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"/><title>New Enrollment Application</title></head>
+<body style="margin:0;padding:0;background:#f7f9fb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <div style="max-width:580px;margin:0 auto;padding:32px 16px;">
+    <div style="background:#0d2840;border-radius:16px 16px 0 0;padding:28px 32px;">
+      <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:#28b7d9;margin-bottom:6px;">Quran Odyssey</div>
+      <div style="font-size:22px;font-weight:800;color:#ffffff;">📋 New Enrollment Application</div>
+      <div style="font-size:13px;color:rgba(255,255,255,0.5);margin-top:4px;">Action required — review and approve or reject</div>
+    </div>
+    <div style="background:#ffffff;border-radius:0 0 16px 16px;padding:32px;border:1px solid #e2e8f0;border-top:none;">
+      <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
+        ${[
+          ['Application ID', applicationId.slice(-10).toUpperCase()],
+          ['Parent Name',    parentName],
+          ['Child Name',     childName],
+          ['Email',          parentEmail],
+          ['Phone',          phone || '—'],
+          ['Course',         courseLabel],
+          ['Teacher Pref',   genderLabel],
+          ['Preferred Days', preferredDays.join(', ')],
+          ['Preferred Time', timeLabel],
+        ].map(([label, value], i) => `
+          <tr>
+            <td style="padding:10px 14px;background:${i%2===0?'#f7f9fb':'#fff'};border:1px solid #e2e8f0;font-size:12px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.04em;width:36%;">${label}</td>
+            <td style="padding:10px 14px;background:${i%2===0?'#f7f9fb':'#fff'};border:1px solid #e2e8f0;font-size:13px;font-weight:600;color:#0f172a;">${value}</td>
+          </tr>`).join('')}
+      </table>
+      ${message ? `
+      <div style="background:#f7f9fb;border-radius:10px;padding:16px 18px;margin-bottom:20px;border-left:4px solid #28b7d9;">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:#94a3b8;margin-bottom:6px;">Student Message</div>
+        <div style="font-size:13px;color:#334155;line-height:1.7;">${message}</div>
+      </div>` : ''}
+      <div style="background:#fff8e7;border-radius:10px;padding:16px 18px;border-left:4px solid #faa71a;">
+        <div style="font-size:13px;font-weight:700;color:#92400e;margin-bottom:4px;">Next Step</div>
+        <div style="font-size:13px;color:#92400e;line-height:1.6;">
+          Review this application in Supabase → <strong>enrollment_requests</strong> table.<br/>
+          Update <strong>status</strong> to <strong>APPROVED</strong> or <strong>REJECTED</strong> via the admin API endpoint.<br/>
+          The student will receive an automated email notification.
+        </div>
+      </div>
+      <p style="font-size:12px;color:#94a3b8;margin-top:20px;border-top:1px solid #e2e8f0;padding-top:16px;">
+        Sent automatically by Quran Odyssey platform on enrollment application submission.
+      </p>
+    </div>
+  </div>
+</body>
+</html>`;
+
+  const { error } = await resend.emails.send({
+    from:    'Quran Odyssey <bookings@quranodyssey.com>',
+    to:      adminEmails,
+    subject: `New Enrollment Application — ${childName} | ${courseLabel}`,
+    html,
+  });
+
+  if (error) throw new Error(`Enrollment admin notification failed: ${JSON.stringify(error)}`);
+  console.log(`✅ Enrollment admin notification sent to: ${adminEmails.join(', ')}`);
+}
+
+// ─── sendEnrollmentApproved ───────────────────────────────
+// Fired when admin approves an enrollment application.
+export async function sendEnrollmentApproved({
+  to,
+  parentName,
+  childName,
+  courseLabel,
+  applicationId,
+}) {
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"/><title>Enrollment Approved — Quran Odyssey</title></head>
+<body style="margin:0;padding:0;background:#f7f9fb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="padding:40px 20px;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;">
+        <tr>
+          <td style="background:#0d2840;border-radius:16px 16px 0 0;padding:32px 40px;text-align:center;">
+            <div style="font-size:22px;font-weight:800;color:#fff;">Quran <span style="color:#28b7d9;">Odyssey</span></div>
+          </td>
+        </tr>
+        <tr>
+          <td style="background:#22c55e;padding:16px 40px;text-align:center;">
+            <div style="font-size:13px;font-weight:700;color:rgba(255,255,255,0.95);text-transform:uppercase;letter-spacing:0.8px;">✓ &nbsp; Enrollment Application Approved</div>
+          </td>
+        </tr>
+        <tr>
+          <td style="background:#fff;padding:40px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 16px 16px;">
+            <p style="font-size:16px;font-weight:700;color:#0f172a;margin:0 0 12px;">Assalamu Alaikum, ${parentName}! 🎉</p>
+            <p style="font-size:14px;color:#64748b;line-height:1.75;margin:0 0 24px;">
+              Great news — <strong style="color:#0f172a;">${childName}'s</strong> enrollment application for <strong style="color:#0f172a;">${courseLabel}</strong> has been <strong style="color:#22c55e;">approved</strong>.
+            </p>
+            <div style="background:#dcfce7;border-radius:10px;padding:20px 24px;margin-bottom:24px;border-left:4px solid #22c55e;">
+              <div style="font-size:14px;font-weight:700;color:#166534;margin-bottom:6px;">What happens next?</div>
+              <div style="font-size:13px;color:#166534;line-height:1.75;">
+                We are now preparing ${childName}'s course and matching them with the right teacher.<br/>
+                You will receive full payment and scheduling details within <strong>24 hours</strong>.
+              </div>
+            </div>
+            <p style="font-size:14px;color:#64748b;margin:0 0 6px;">
+              In the meantime, you can check your application status in your student dashboard.
+            </p>
+            <p style="font-size:12px;color:#94a3b8;margin:24px 0 0;border-top:1px solid #e2e8f0;padding-top:16px;">
+              Ref: ${applicationId.slice(-10).toUpperCase()} · Quran Odyssey · UK · USA · Canada
+            </p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+  const { data, error } = await resend.emails.send({
+    from:    'Quran Odyssey <bookings@quranodyssey.com>',
+    to:      [to],
+    subject: `✓ Enrollment Approved — ${childName} | ${courseLabel}`,
+    html,
+  });
+
+  if (error) {
+    console.error('Enrollment approved email error:', error);
+    return { success: false };
+  }
+  console.log(`✅ Enrollment approved email sent to ${to} — ID: ${data.id}`);
+  return { success: true };
+}
+
+// ─── sendEnrollmentRejected ───────────────────────────────
+// Fired when admin rejects an enrollment application.
+export async function sendEnrollmentRejected({
+  to,
+  parentName,
+  childName,
+  courseLabel,
+  rejectionReason,
+}) {
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"/><title>Enrollment Update — Quran Odyssey</title></head>
+<body style="margin:0;padding:0;background:#f7f9fb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="padding:40px 20px;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;">
+        <tr>
+          <td style="background:#0d2840;border-radius:16px 16px 0 0;padding:32px 40px;text-align:center;">
+            <div style="font-size:22px;font-weight:800;color:#fff;">Quran <span style="color:#28b7d9;">Odyssey</span></div>
+          </td>
+        </tr>
+        <tr>
+          <td style="background:#fff;padding:40px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 16px 16px;">
+            <p style="font-size:16px;font-weight:700;color:#0f172a;margin:0 0 12px;">Assalamu Alaikum, ${parentName},</p>
+            <p style="font-size:14px;color:#64748b;line-height:1.75;margin:0 0 24px;">
+              Thank you for applying to enroll <strong style="color:#0f172a;">${childName}</strong> in <strong style="color:#0f172a;">${courseLabel}</strong>. Unfortunately, we are unable to approve this application at this time.
+            </p>
+            <div style="background:#fff7f7;border-radius:10px;padding:20px 24px;margin-bottom:24px;border-left:4px solid #ef4444;">
+              <div style="font-size:13px;font-weight:700;color:#991b1b;margin-bottom:6px;">Reason</div>
+              <div style="font-size:13px;color:#991b1b;line-height:1.75;">${rejectionReason}</div>
+            </div>
+            <p style="font-size:14px;color:#64748b;line-height:1.75;margin:0 0 24px;">
+              This does not prevent you from applying again. If you have questions or would like to discuss alternatives, please reach out to us on WhatsApp — we are happy to help find the right solution for ${childName}.
+            </p>
+            <p style="font-size:12px;color:#94a3b8;margin:24px 0 0;border-top:1px solid #e2e8f0;padding-top:16px;">
+              Quran Odyssey · UK · USA · Canada · quranodyssey.com
+            </p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+  const { data, error } = await resend.emails.send({
+    from:    'Quran Odyssey <bookings@quranodyssey.com>',
+    to:      [to],
+    subject: `Enrollment Application Update — ${courseLabel}`,
+    html,
+  });
+
+  if (error) {
+    console.error('Enrollment rejected email error:', error);
+    return { success: false };
+  }
+  console.log(`✅ Enrollment rejected email sent to ${to} — ID: ${data.id}`);
+  return { success: true };
+}
