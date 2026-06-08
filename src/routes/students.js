@@ -237,52 +237,72 @@ router.get('/assignments', requireAuth, async (req, res) => {
 // Student submits an assignment.
 // Body: { content, fileUrl }
 // ─────────────────────────────────────────────────────────
+
 router.post('/assignments/:id/submit', requireAuth, async (req, res) => {
-  const { id }               = req.params;
-  const { content, fileUrl } = req.body;
-
+  const { id }                            = req.params;
+  const { content, fileUrl, fileName, fileType } = req.body;
+ 
+  // Must have at least one of: content or fileUrl
   if (!content && !fileUrl) {
-    return res.status(400).json({ error: 'Provide either content (text) or fileUrl' });
+    return res.status(400).json({ error: 'Provide either content (text) or a file upload' });
   }
-
+ 
+  // Content length guard
   if (content && content.trim().length > 3000) {
     return res.status(400).json({ error: 'Content exceeds 3000 character limit' });
   }
-
+ 
+  // URL format guard (Supabase Storage URLs are always valid https)
   if (fileUrl) {
     try { new URL(fileUrl); } catch {
       return res.status(400).json({ error: 'fileUrl must be a valid URL' });
     }
   }
-
+ 
+  // fileType length guard
+  if (fileType && fileType.length > 100) {
+    return res.status(400).json({ error: 'Invalid fileType' });
+  }
+ 
+  // fileName length guard
+  if (fileName && fileName.length > 500) {
+    return res.status(400).json({ error: 'Invalid fileName' });
+  }
+ 
   try {
     const assignment = await prisma.assignment.findUnique({
       where:   { id },
       include: { submission: true },
     });
-
-    // Assignment must exist and belong to this student
+ 
+    // Must exist and belong to this student
     if (!assignment || assignment.studentId !== req.user.id) {
       return res.status(404).json({ error: 'Assignment not found' });
     }
-
+ 
     // Already submitted
     if (assignment.submission) {
-      return res.status(409).json({ error: 'Assignment already submitted. Ask your teacher to allow resubmission.' });
+      return res.status(409).json({
+        error: 'Assignment already submitted. Contact your teacher to allow resubmission.',
+      });
     }
-
+ 
     // Cannot submit a graded assignment
     if (assignment.status === 'GRADED') {
       return res.status(409).json({ error: 'Cannot submit a graded assignment' });
     }
-
+ 
+    // Create submission + update assignment status in one transaction
     const [submission] = await prisma.$transaction([
       prisma.assignmentSubmission.create({
         data: {
           assignmentId: id,
           studentId:    req.user.id,
           content:      content?.trim() || null,
-          fileUrl:      fileUrl?.trim() || null,
+          // ── NEW: file fields ──────────────────────────
+          fileUrl:      fileUrl?.trim()  || null,
+          fileName:     fileName?.trim() || null,
+          fileType:     fileType?.trim() || null,
         },
       }),
       prisma.assignment.update({
@@ -290,8 +310,8 @@ router.post('/assignments/:id/submit', requireAuth, async (req, res) => {
         data:  { status: 'SUBMITTED' },
       }),
     ]);
-
-    console.log(`✅ Assignment ${id} submitted by student ${req.user.id}`);
+ 
+    console.log(`✅ Assignment ${id} submitted by student ${req.user.id}${fileUrl ? ' with file' : ''}`);
     return res.status(201).json({ submission });
   } catch (err) {
     console.error('Submission failed:', err);

@@ -319,6 +319,12 @@ model Assignment {
   enrollmentId String?
   title        String
   description  String?
+
+  // ── File attachment (teacher uploads when creating assignment) ──
+  attachmentUrl  String?
+  attachmentName String?
+  attachmentType String?
+
   dueDate      DateTime
   status       AssignmentStatus @default(PENDING)
   courseType   CourseType
@@ -343,7 +349,12 @@ model AssignmentSubmission {
   assignmentId String    @unique
   studentId    String
   content      String?
-  fileUrl      String?
+
+  // ── File submission (student uploads when submitting) ──
+  fileUrl  String?   // Supabase Storage public URL
+  fileName String?   // original filename e.g. "my_recitation.mp3"
+  fileType String?   // MIME type e.g. "audio/mpeg", "image/png"
+  
   grade        String?
   feedback     String?
   submittedAt  DateTime  @default(now())

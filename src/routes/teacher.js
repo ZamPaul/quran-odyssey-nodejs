@@ -689,23 +689,27 @@ router.post('/assignments', writeLimiter, async (req, res) => {
 
     const assignment = await prisma.assignment.create({
       data: {
-        teacherId:    req.teacher.id,
+        teacherId:      req.teacher.id,
         studentId,
-        enrollmentId: enrollmentId || enrollment.id,
+        enrollmentId:   enrollmentId || null,
         title,
-        description,
+        description:    description || null,
+   
+        // ── NEW: file attachment from teacher ──────────────
+        attachmentUrl:  cleanStr(req.body.attachmentUrl  || '', 2000) || null,
+        attachmentName: cleanStr(req.body.attachmentName || '', 500)  || null,
+        attachmentType: cleanStr(req.body.attachmentType || '', 100)  || null,
+   
         dueDate,
         courseType,
-        status:       'PENDING',
+        status: 'PENDING',
       },
       include: {
         student: {
           select: {
             id:    true,
             email: true,
-            studentProfile: {
-              select: { childName: true, parentName: true },
-            },
+            studentProfile: { select: { childName: true, parentName: true } },
           },
         },
         submission: true,
