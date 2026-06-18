@@ -11,42 +11,55 @@ const clerk = createClerkClient({
 export const requireAuth = async (req, res, next) => {
   const authHeader = req.headers.authorization;
 
-  // console.log("CLERK SECRET KEY EXISTS:", process.env.CLERK_SECRET_KEY);
-
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return res.status(401).json({ error: "No authorization token provided" });
   }
 
   const token = authHeader.split(" ")[1];
-  console.log("token: ", token)
 
   try {
     // Verify the JWT Clerk issued to this user
     const payload = await verifyToken(token, {
-      secretKey: process.env.CLERK_SECRET_KEY
+      secretKey: process.env.CLERK_SECRET_KEY,
     });
 
     // payload.sub is the Clerk user ID (e.g. "user_2abc...")
-    console.log(payload.sub);
     req.auth = { clerkId: payload.sub };
 
-    // Attach our DB user to the request so routes don't re-query
+    // Attach our DB user + the learners this account manages.
+    // managedStudents replaces the old single studentProfile include.
     const dbUser = await prisma.user.findUnique({
-      where: { clerkId: payload.sub },
-      include: { studentProfile: true },
+      where:   { clerkId: payload.sub },
+      include: {
+        managedStudents: {
+          orderBy: { createdAt: "asc" },
+        },
+      },
     });
 
     if (!dbUser) {
-      console.log("user not found");
       return res.status(401).json({ error: "User not found in database" });
     }
 
     req.user = dbUser;
-    console.log("Verified with Auth Middleware");
+
+    // The isolation boundary for ALL student-data routes.
+    // Every per-learner query MUST validate the target studentId
+    // against this array — never trust req.body / req.params alone.
+    req.studentIds = dbUser.managedStudents.map((s) => s.id);
+
     next();
   } catch (err) {
-    console.log("error: ", err);
     console.error("Auth middleware error:", err.message);
     return res.status(401).json({ error: "Invalid or expired token" });
   }
 };
+
+// ─────────────────────────────────────────────────────────
+// Helper: assert the logged-in account owns a given studentId.
+// Use inside routes that take a :studentId param.
+// Returns true if owned, false otherwise.
+// ─────────────────────────────────────────────────────────
+export function ownsStudent(req, studentId) {
+  return Array.isArray(req.studentIds) && req.studentIds.includes(studentId);
+}

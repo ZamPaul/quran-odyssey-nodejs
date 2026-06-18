@@ -63,18 +63,15 @@ function calcAttendancePercentage(records) {
 
 // Student select shape — reused across multiple queries
 const studentSelect = {
-  id:    true,
-  email: true,
-  studentProfile: {
-    select: {
-      childName:  true,
-      parentName: true,
-      timezone:   true,
-      phone:      true,
-      childAge:   true,
-      country:    true,
-      courseInterest: true,
-    },
+  id:       true,
+  name:     true,
+  age:      true,
+  country:  true,
+  timezone: true,
+  courseInterest: true,
+  account:  { select: { email: true, name: true, phone: true } },
+  attendanceRecords: {
+    select: { status: true },
   },
 };
 
@@ -389,11 +386,9 @@ router.get('/students', async (req, res) => {
       include: {
         student: {
           select: {
-            ...studentSelect,
-            attendanceRecords: {
-              where:  { teacherId: req.teacher.id },
-              select: { status: true },
-            },
+            id: true, name: true, age: true, country: true, timezone: true,
+            account: { select: { email: true } },
+            attendanceRecords: { select: { status: true } },
           },
         },
       },
@@ -411,8 +406,11 @@ router.get('/students', async (req, res) => {
       },
       student: {
         id:      enrollment.student.id,
-        email:   enrollment.student.email,
-        profile: enrollment.student.studentProfile,
+        name:    enrollment.student.name,                  // was profile.childName
+        email:   enrollment.student.account.email,         // was student.email
+        age:     enrollment.student.age,
+        country: enrollment.student.country,
+        timezone: enrollment.student.timezone,
         attendancePercentage: calcAttendancePercentage(
           enrollment.student.attendanceRecords
         ),
@@ -452,7 +450,7 @@ router.get('/students/:id', async (req, res) => {
       await Promise.all([
 
         // Student profile
-        prisma.user.findUnique({
+        prisma.student.findUnique({
           where:  { id },
           select: studentSelect,
         }),
@@ -496,9 +494,13 @@ router.get('/students/:id', async (req, res) => {
 
     return res.json({
       student: {
-        id:      student.id,
-        email:   student.email,
-        profile: student.studentProfile,
+        id:       student.id,
+        name:     student.name,
+        age:      student.age,
+        country:  student.country,
+        timezone: student.timezone,
+        email:    student.account.email,
+        phone:    student.account.phone,
       },
       enrollment: {
         id:              enrollment.id,
@@ -555,11 +557,9 @@ router.get('/assignments', async (req, res) => {
       include: {
         student: {
           select: {
-            id:    true,
-            email: true,
-            studentProfile: {
-              select: { childName: true, parentName: true },
-            },
+            id:      true,
+            name:    true,
+            account: { select: { email: true, name: true } },
           },
         },
         submission: true,
@@ -594,11 +594,10 @@ router.get('/assignments/:id', async (req, res) => {
       include: {
         student: {
           select: {
-            id:    true,
-            email: true,
-            studentProfile: {
-              select: { childName: true, parentName: true, timezone: true },
-            },
+            id:       true,
+            name:     true,
+            timezone: true,
+            account:  { select: { email: true, name: true } },
           },
         },
         enrollment: {
@@ -707,9 +706,9 @@ router.post('/assignments', writeLimiter, async (req, res) => {
       include: {
         student: {
           select: {
-            id:    true,
-            email: true,
-            studentProfile: { select: { childName: true, parentName: true } },
+            id:      true,
+            name:    true,
+            account: { select: { email: true, name: true } },
           },
         },
         submission: true,
@@ -814,7 +813,7 @@ router.patch('/assignments/:id', writeLimiter, async (req, res) => {
 
     const updated = await prisma.assignment.update({
       where: { id }, data: updateData,
-      include: { student:{ select:{ id:true, email:true, studentProfile:{ select:{ childName:true } } } }, submission:true },
+      include: { student:{ select:{ id:true, name:true, account:{ select:{ email:true } } } }, submission:true },
     });
 
     return res.json({ assignment: updated });
@@ -1011,11 +1010,9 @@ router.get('/reports', async (req, res) => {
       include: {
         student: {
           select: {
-            id:    true,
-            email: true,
-            studentProfile: {
-              select: { childName: true, parentName: true },
-            },
+            id:      true,
+            name:    true,
+            account: { select: { email: true, name: true } },
           },
         },
       },
@@ -1042,15 +1039,10 @@ router.get('/reports/:id', async (req, res) => {
       include: {
         student: {
           select: {
-            id:    true,
-            email: true,
-            studentProfile: {
-              select: {
-                childName:  true,
-                parentName: true,
-                timezone:   true,
-              },
-            },
+            id:       true,
+            name:     true,
+            timezone: true,
+            account:  { select: { email: true, name: true } },
           },
         },
         enrollment: {
@@ -1233,7 +1225,13 @@ router.post('/reports', writeLimiter, async (req, res) => {
         nextSteps,
       },
       include: {
-        student: { select:{ id:true, email:true, studentProfile:{ select:{ childName:true, parentName:true } } } },
+        student: {
+          select: {
+            id:   true,
+            name: true,
+            account: { select: { email: true, name: true } },
+          },
+        },
       },
     });
 
@@ -1301,11 +1299,9 @@ router.patch('/reports/:id', async (req, res) => {
       include: {
         student: {
           select: {
-            id:    true,
-            email: true,
-            studentProfile: {
-              select: { childName: true, parentName: true },
-            },
+            id:      true,
+            name:    true,
+            account: { select: { email: true, name: true } },
           },
         },
       },
@@ -1332,14 +1328,9 @@ router.post('/reports/:id/send', async (req, res) => {
       include: {
         student: {
           select: {
-            id:    true,
-            email: true,
-            studentProfile: {
-              select: {
-                childName:  true,
-                parentName: true,
-              },
-            },
+            id:      true,
+            name:    true,
+            account: { select: { email: true, name: true } },
           },
         },
       },
@@ -1356,19 +1347,10 @@ router.post('/reports/:id/send', async (req, res) => {
       });
     }
 
-    // Determine parent email
-    // Priority: StudentProfile parentEmail field if it exists
-    // Fallback: student's own email (for adult students)
-    const parentEmail =
-      report.student.studentProfile?.parentEmail ||
-      report.student.email;
-
-    const parentName =
-      report.student.studentProfile?.parentName || 'Parent';
-
-    const childName =
-      report.student.studentProfile?.childName ||
-      report.student.email.split('@')[0];
+    // Recipient is the account holder (parent or solo adult).
+    const parentEmail = report.student.account.email;
+    const parentName  = report.student.account.name || 'Parent';
+    const childName   = report.student.name;
 
     // Send email — non-blocking failure
     // If email fails, we still mark the report as sent
@@ -1478,11 +1460,9 @@ router.get('/attendance', async (req, res) => {
       include: {
         student: {
           select: {
-            id:    true,
-            email: true,
-            studentProfile: {
-              select: { childName: true, parentName: true },
-            },
+            id:      true,
+            name:    true,
+            account: { select: { email: true, name: true } },
           },
         },
         session: {
@@ -1521,11 +1501,9 @@ router.get('/attendance/summary', async (req, res) => {
       include: {
         student: {
           select: {
-            id:    true,
-            email: true,
-            studentProfile: {
-              select: { childName: true, parentName: true },
-            },
+            id:      true,
+            name:    true,
+            account: { select: { email: true } },
           },
         },
       },
@@ -1561,9 +1539,9 @@ router.get('/attendance/summary', async (req, res) => {
 
         return {
           student: {
-            id:      enrollment.student.id,
-            email:   enrollment.student.email,
-            profile: enrollment.student.studentProfile,
+            id:    enrollment.student.id,
+            name:  enrollment.student.name,
+            email: enrollment.student.account.email,
           },
           enrollment: {
             id:         enrollment.id,
@@ -1611,11 +1589,9 @@ router.get('/attendance/session/:sessionId', async (req, res) => {
       include: {
         student: {
           select: {
-            id:    true,
-            email: true,
-            studentProfile: {
-              select: { childName: true },
-            },
+            id:   true,
+            name: true,
+            account: { select: { email: true } },
           },
         },
       },
@@ -1643,110 +1619,6 @@ router.get('/attendance/session/:sessionId', async (req, res) => {
 // Mark attendance for a session
 // Body: { sessionId, status, notes }
 // ─────────────────────────────────────────────────────────
-// router.post('/attendance', async (req, res) => {
-//   const { sessionId, status, notes } = req.body;
-
-//   // Validation
-//   const errors = [];
-//   if (!sessionId) errors.push('sessionId is required');
-//   if (!status)    errors.push('status is required');
-
-//   const validStatuses = ['PRESENT', 'LATE', 'ABSENT', 'EXCUSED'];
-//   if (status && !validStatuses.includes(status)) {
-//     errors.push(`status must be one of: ${validStatuses.join(', ')}`);
-//   }
-
-//   if (errors.length > 0) {
-//     return res.status(400).json({ error: 'Validation failed', details: errors });
-//   }
-
-//   try {
-//     // Verify session belongs to this teacher
-//     const session = await prisma.classSession.findUnique({
-//       where: { id: sessionId },
-//     });
-
-//     if (!session || session.teacherId !== req.teacher.id) {
-//       return res.status(404).json({ error: 'Session not found' });
-//     }
-
-//     // Check not already marked
-//     const existing = await prisma.attendanceRecord.findUnique({
-//       where: { sessionId },
-//     });
-
-//     if (existing) {
-//       return res.status(409).json({
-//         error:      'Attendance already marked for this session. Use PATCH to update.',
-//         recordId:   existing.id,
-//         currentStatus: existing.status,
-//       });
-//     }
-
-//     // Find the enrollment for this teacher + student combination
-//     const enrollment = await prisma.enrollment.findFirst({
-//       where: {
-//         teacherId: req.teacher.id,
-//         studentId: session.studentId,
-//       },
-//     });
-
-//     // Create attendance record and update session status in a transaction
-//     const [record] = await prisma.$transaction([
-//       prisma.attendanceRecord.create({
-//         data: {
-//           teacherId:    req.teacher.id,
-//           studentId:    session.studentId,
-//           sessionId,
-//           enrollmentId: enrollment?.id || null,
-//           status,
-//           notes:        notes?.trim() || null,
-//         },
-//         include: {
-//           student: {
-//             select: {
-//               id:    true,
-//               email: true,
-//               studentProfile: {
-//                 select: { childName: true },
-//               },
-//             },
-//           },
-//           session: {
-//             select: {
-//               id:          true,
-//               scheduledAt: true,
-//               courseType:  true,
-//             },
-//           },
-//         },
-//       }),
-
-//       // Auto-update session status based on attendance
-//       // PRESENT/LATE → COMPLETED, ABSENT/EXCUSED → MISSED
-//       prisma.classSession.update({
-//         where: { id: sessionId },
-//         data: {
-//           status: ['PRESENT', 'LATE'].includes(status) ? 'COMPLETED' : 'MISSED',
-//         },
-//       }),
-//     ]);
-
-//     console.log(
-//       `✅ Attendance marked: ${record.student.studentProfile?.childName || 'Student'} — ${status}`
-//     );
-//     return res.status(201).json({ record });
-//   } catch (err) {
-//     // Handle unique constraint violation gracefully
-//     if (err.code === 'P2002') {
-//       return res.status(409).json({
-//         error: 'Attendance already marked for this session',
-//       });
-//     }
-//     console.error('Attendance marking failed:', err);
-//     return res.status(500).json({ error: 'Failed to mark attendance' });
-//   }
-// });
 
 router.post('/attendance', writeLimiter, async (req, res) => {
   const errs = [];
@@ -1790,8 +1662,8 @@ router.post('/attendance', writeLimiter, async (req, res) => {
           notes,
         },
         include: {
-          student: { select:{ id:true, email:true, studentProfile:{ select:{ childName:true } } } },
-          session: { select:{ id:true, scheduledAt:true, courseType:true } },
+          student: { select: { id: true, name: true, account: { select: { email: true } } } },
+          session: { select: { id: true, scheduledAt: true, courseType: true } },
         },
       }),
       prisma.classSession.update({
@@ -1800,7 +1672,7 @@ router.post('/attendance', writeLimiter, async (req, res) => {
       }),
     ]);
 
-    console.log(`✅ Attendance: ${record.student.studentProfile?.childName || 'Student'} — ${status}`);
+    console.log(`✅ Attendance: ${record.student.name || 'Student'} — ${status}`);
     return res.status(201).json({ record });
   } catch (err) {
     if (err.code === 'P2002') {
@@ -1853,11 +1725,8 @@ router.patch('/attendance/:id', async (req, res) => {
         include: {
           student: {
             select: {
-              id:    true,
-              email: true,
-              studentProfile: {
-                select: { childName: true },
-              },
+              id:   true,
+              name: true,
             },
           },
           session: {

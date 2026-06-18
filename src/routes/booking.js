@@ -9,6 +9,7 @@ import {
 } from "../services/googleCalendar.js";
 import { sendAdminTrialNotification, sendTrialBookingConfirmation } from "../services/email.js";
 import { sendTrialBookingWhatsApp } from "../services/whatsapp.js";
+import { ownsStudent } from "../middleware/auth.js";
 
 const router = express.Router();
 
@@ -195,16 +196,35 @@ router.get('/availability', async (req, res) => {
 });
 
 // ─── GET /api/booking/mine ────────────────────────────────
-// Returns the current user's trial booking if one exists
-// Used by the dashboard to show upcoming class
-router.get("/mine", requireAuth, async (req, res) => {
-  const booking = await prisma.trialBooking.findFirst({
-    where: { studentId: req.user.id },
-    include: { teacher: { select: { name: true, specialty: true } } },
-    orderBy: { createdAt: "desc" },
-  });
-
-  return res.json({ booking: booking || null });
+// All trials across the account's learners (optional ?studentId=).
+router.get('/mine', requireAuth, async (req, res) => {
+  const { studentId } = req.query;
+ 
+  let studentFilter;
+  if (studentId) {
+    if (!ownsStudent(req, studentId)) {
+      return res.status(404).json({ error: 'Learner not found' });
+    }
+    studentFilter = studentId;
+  } else {
+    studentFilter = { in: req.studentIds };
+  }
+ 
+  try {
+    const bookings = await prisma.trialBooking.findMany({
+      where:   { studentId: studentFilter },
+      include: {
+        teacher: { select: { name: true, specialty: true } },
+        student: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+ 
+    return res.json({ bookings });
+  } catch (err) {
+    console.error('Trials fetch failed:', err);
+    return res.status(500).json({ error: 'Failed to fetch trial bookings' });
+  }
 });
 
 // TEMPORARY — delete after testing
@@ -225,377 +245,97 @@ router.get("/test-whatsapp", requireAuth, async (req, res) => {
   res.json(result);
 });
 
-// ─── POST /api/booking/trial ──────────────────────────────
-// router.post("/trial", requireAuth, async (req, res) => {
-//   const { teacherId, slotStart, studentTimezone } = req.body;
-
-//   // ── 1. Validate input ────────────────────────────────
-//   if (!teacherId || !slotStart || !studentTimezone) {
-//     return res.status(400).json({
-//       error: "teacherId, slotStart, and studentTimezone are required",
-//     });
-//   }
-
-//   // Validate slotStart is a valid ISO date string
-//   const slotStartDate = new Date(slotStart);
-//   if (isNaN(slotStartDate.getTime())) {
-//     return res
-//       .status(400)
-//       .json({ error: "slotStart must be a valid ISO date string" });
-//   }
-
-//   // Reject slots in the past
-//   if (slotStartDate < new Date()) {
-//     return res.status(400).json({ error: "Cannot book a slot in the past" });
-//   }
-
-//   const slotEndDate = new Date(slotStartDate.getTime() + 30 * 60 * 1000);
-
-//   // ── 2. Check student doesn't already have a booking ──
-//   const existingBooking = await prisma.trialBooking.findFirst({
-//     where: { studentId: req.user.id },
-//   });
-
-//   if (existingBooking) {
-//     return res.status(409).json({
-//       error: "You already have a trial class booked",
-//       bookingId: existingBooking.id,
-//       slotStart: existingBooking.slotStart,
-//       status: existingBooking.status,
-//     });
-//   }
-
-//   // ── 3. Fetch teacher ──────────────────────────────────
-//   const teacher = await prisma.teacher.findUnique({
-//     where: { id: teacherId },
-//     select: { id: true, name: true, calendarId: true, isActive: true },
-//   });
-
-//   if (!teacher || !teacher.isActive) {
-//     return res.status(404).json({ error: "Teacher not found or unavailable" });
-//   }
-
-//   if (!teacher.calendarId || teacher.calendarId.startsWith("placeholder")) {
-//     return res.status(503).json({ error: "Teacher calendar not configured" });
-//   }
-
-//   // ── 4. Re-check slot availability ────────────────────
-//   // Protects against two users booking the same slot simultaneously
-//   const conflictingBooking = await prisma.trialBooking.findFirst({
-//     where: {
-//       teacherId,
-//       slotStart: slotStartDate,
-//     },
-//   });
-
-//   if (conflictingBooking) {
-//     return res.status(409).json({
-//       error:
-//         "This slot was just taken by another student. Please choose a different time.",
-//     });
-//   }
-
-//   // ── 5. Create TrialBooking in DB ──────────────────────
-//   let booking;
-//   try {
-//     booking = await prisma.trialBooking.create({
-//       data: {
-//         studentId: req.user.id,
-//         teacherId: teacher.id,
-//         slotStart: slotStartDate,
-//         slotEnd: slotEndDate,
-//         status: "PENDING",
-//         studentTimezone,
-//       },
-//     });
-
-//     console.log(`✅ TrialBooking created: ${booking.id}`);
-//   } catch (err) {
-//     // Unique constraint violation — someone else booked this exact slot
-//     // between our check and our insert (true race condition)
-//     if (err.code === "P2002") {
-//       return res.status(409).json({
-//         error: "This slot was just taken. Please choose a different time.",
-//       });
-//     }
-
-//     console.error("❌ Failed to create TrialBooking:", err);
-//     return res.status(500).json({ error: "Failed to create booking" });
-//   }
-
-//   // ── 6. Create Google Calendar event ──────────────────
-//   // This IS blocking — if calendar fails, we still have the DB record
-//   // Admin can manually create the event. Log and continue.
-//   let calEventId = null;
-//   try {
-//     const profile = req.user.studentProfile;
-//     const courseLabel =
-//       profile?.courseInterest
-//         ?.replace(/_/g, " ")
-//         .toLowerCase()
-//         .replace(/\b\w/g, (c) => c.toUpperCase()) || "Quran Class";
-
-//     calEventId = await createBookingEvent({
-//       calendarId: teacher.calendarId,
-//       slotStart: slotStartDate.toISOString(),
-//       slotEnd: slotEndDate.toISOString(),
-//       studentName: profile?.childName || "Student",
-//       parentName: profile?.parentName || req.user.email,
-//       courseInterest: profile?.courseInterest || "QURAN_RECITATION",
-//       studentEmail: req.user.email,
-//     });
-
-//     // Save the calendar event ID
-//     await prisma.trialBooking.update({
-//       where: { id: booking.id },
-//       data: { calEventId },
-//     });
-
-//     console.log("calendar event created successfully");
-//   } catch (err) {
-//     console.error(
-//       "⚠️  Calendar event creation failed (booking still saved):",
-//       err.message,
-//     );
-//     // Don't return — booking is created, continue to notifications
-//   }
-
-//   // ── 7 & 8. Notifications — non-blocking ──────────────
-//   // Build shared display values for both email and WhatsApp
-//   const profile = req.user.studentProfile;
-//   const parentName = profile?.parentName || "Parent";
-//   const childName = profile?.childName || "your child";
-//   const courseLabel =
-//     profile?.courseInterest
-//       ?.replace(/_/g, " ")
-//       .toLowerCase()
-//       .replace(/\b\w/g, (c) => c.toUpperCase()) || "Quran Class";
-
-//   const start = slotStartDate;
-//   const end = slotEndDate;
-//   const tz = studentTimezone;
-
-//   const dateDisplay = start.toLocaleDateString("en-GB", {
-//     timeZone: tz,
-//     weekday: "long",
-//     year: "numeric",
-//     month: "long",
-//     day: "numeric",
-//   });
-
-//   const timeStart = start.toLocaleTimeString("en-GB", {
-//     timeZone: tz,
-//     hour: "2-digit",
-//     minute: "2-digit",
-//   });
-
-//   const timeEnd = end.toLocaleTimeString("en-GB", {
-//     timeZone: tz,
-//     hour: "2-digit",
-//     minute: "2-digit",
-//   });
-
-//   const tzAbbr = start
-//     .toLocaleTimeString("en-GB", {
-//       timeZone: tz,
-//       timeZoneName: "short",
-//     })
-//     .split(" ")
-//     .pop();
-
-//   const timeDisplay = `${timeStart} – ${timeEnd} (${tzAbbr})`;
-
-//   // // Send email — fire and forget
-//   // sendTrialBookingConfirmation({
-//   //   to: req.user.email,
-//   //   parentName,
-//   //   childName,
-//   //   teacherName: teacher.name,
-//   //   courseLabel,
-//   //   slotStart: slotStartDate.toISOString(),
-//   //   studentTimezone: tz,
-//   //   bookingId: booking.id,
-//   // })
-//   //   .then((result) => {
-//   //     if (result.success) {
-//   //       return prisma.trialBooking.update({
-//   //         where: { id: booking.id },
-//   //         data: { emailSent: true },
-//   //       });
-//   //     }
-//   //   })
-//   //   .catch((err) => console.error("⚠️  Email update failed:", err.message));
-
-//   // // Send WhatsApp — fire and forget (only if phone exists)
-//   // if (profile?.phone) {
-//   //   sendTrialBookingWhatsApp({
-//   //     phone: profile.phone,
-//   //     parentName,
-//   //     childName,
-//   //     teacherName: teacher.name,
-//   //     courseLabel,
-//   //     dateDisplay,
-//   //     timeDisplay,
-//   //   })
-//   //     .then((result) => {
-//   //       if (result.success) {
-//   //         return prisma.trialBooking.update({
-//   //           where: { id: booking.id },
-//   //           data: { whatsappSent: true },
-//   //         });
-//   //       }
-//   //     })
-//   //     .catch((err) =>
-//   //       console.error("⚠️  WhatsApp update failed:", err.message),
-//   //     );
-//   // }
-
-//   // Replace the existing notification section with this
-  
-//   const notifications = await Promise.allSettled([
-//     sendTrialBookingConfirmation({
-//       to:              req.user.email,
-//       parentName,
-//       childName,
-//       teacherName:     teacher.name,
-//       courseLabel,
-//       slotStart:       slotStartDate.toISOString(),
-//       studentTimezone: tz,
-//       bookingId:       booking.id,
-//     }),
-//     profile?.phone ? sendTrialBookingWhatsApp({
-//       phone:       profile.phone,
-//       parentName,
-//       childName,
-//       teacherName: teacher.name,
-//       courseLabel,
-//       dateDisplay,
-//       timeDisplay,
-//     }) : Promise.resolve({ success: false, error: 'No phone' }),
-//   ]);
-
-//   // Log notification results
-//   const [emailResult, waResult] = notifications;
-
-//   if (emailResult.status === 'fulfilled' && emailResult.value?.success) {
-//     prisma.trialBooking.update({ where: { id: booking.id }, data: { emailSent: true } })
-//       .catch(() => {});
-//   } else {
-//     console.error('⚠️  Email notification failed:', emailResult.reason || emailResult.value?.error);
-//   }
-  
-//   if (waResult.status === 'fulfilled' && waResult.value?.success) {
-//     prisma.trialBooking.update({ where: { id: booking.id }, data: { whatsappSent: true } })
-//       .catch(() => {});
-//   } else {
-//     console.warn('⚠️  WhatsApp notification skipped or failed:', waResult.reason || waResult.value?.error);
-//   }
-
-//   // ── 9. Return confirmation ────────────────────────────
-//   return res.status(201).json({
-//     booking: {
-//       id: booking.id,
-//       status: booking.status,
-//       slotStart: booking.slotStart,
-//       slotEnd: booking.slotEnd,
-//       teacherName: teacher.name,
-//       dateDisplay,
-//       timeDisplay,
-//     },
-//     message:
-//       "Trial class booked successfully. Check your email for confirmation.",
-//   });
-// });
-
-
 // ── POST /api/booking/trial ────────────────────────────────
 // Updated: no teacher assignment, universal calendar, admin notification
 
 router.post('/trial', requireAuth, async (req, res) => {
-  const { slotStart, courseInterest, childName, childAge, timezone, genderPreference } = req.body;
-
-  // Validate required fields
+  const {
+    studentId,                 // optional — if omitted, we create a learner inline
+    slotStart,
+    courseInterest,
+    childName,
+    childAge,
+    country,
+    timezone,
+    genderPreference,
+  } = req.body;
+ 
+  // ── Validate ───────────────────────────────────────────
   const errors = [];
   if (!slotStart)      errors.push('slotStart is required');
   if (!courseInterest) errors.push('courseInterest is required');
-  if (!childName)      errors.push('childName is required');
   if (errors.length)   return res.status(400).json({ error: 'Validation failed', details: errors });
-
+ 
   const validCourses = ['NOORANI_QAIDA','QURAN_RECITATION','TAJWEED','HIFZ','ISLAMIC_STUDIES','ONE_TO_ONE'];
   if (!validCourses.includes(courseInterest)) {
     return res.status(400).json({ error: 'Invalid courseInterest' });
   }
-
+ 
   const validGender = ['MALE','FEMALE','NO_PREFERENCE'];
   const cleanGender = validGender.includes(genderPreference) ? genderPreference : 'NO_PREFERENCE';
-
+ 
   const slot = new Date(slotStart);
-  if (isNaN(slot.getTime())) {
-    return res.status(400).json({ error: 'Invalid slotStart date' });
-  }
-
-  // Must be in the future
-  if (slot <= new Date()) {
-    return res.status(400).json({ error: 'Selected slot is in the past' });
-  }
-
+  if (isNaN(slot.getTime()))  return res.status(400).json({ error: 'slotStart must be a valid ISO date' });
+  if (slot < new Date())      return res.status(400).json({ error: 'Cannot book a slot in the past' });
+ 
+  const userTimezone = timezone || 'UTC';
+ 
   try {
-    // Step 2 — Check student doesn't already have an active trial
-    const existingBooking = await prisma.trialBooking.findFirst({
-      where: {
-        studentId: req.user.id,
-        status:    { notIn: ['CANCELLED'] },
-      },
+    // ── Resolve which learner this trial is for ──────────
+    let learner;
+ 
+    if (studentId) {
+      // Existing learner — must belong to this account
+      if (!ownsStudent(req, studentId)) {
+        return res.status(404).json({ error: 'Learner not found' });
+      }
+      learner = await prisma.student.findUnique({
+        where:   { id: studentId },
+        include: { account: { select: { email: true, name: true, phone: true } } },
+      });
+      if (!learner) return res.status(404).json({ error: 'Learner not found' });
+    } else {
+      // No learner yet — create one inline from the booking fields.
+      if (!childName) {
+        return res.status(400).json({ error: 'childName is required when no studentId is given' });
+      }
+      const ageNum = childAge ? parseInt(childAge, 10) : 0;
+      learner = await prisma.student.create({
+        data: {
+          accountId:      req.user.id,
+          name:           childName.trim(),
+          age:            isNaN(ageNum) ? 0 : ageNum,
+          country:        country?.trim() || 'Unknown',
+          timezone:       userTimezone,
+          courseInterest,
+          gender:         null,
+          isSelf:         false,
+        },
+        include: { account: { select: { email: true, name: true, phone: true } } },
+      });
+      console.log(`✅ Inline learner created during trial booking: ${learner.name}`);
+    }
+ 
+    // ── Guard: this learner already has a trial booked ────
+    const existing = await prisma.trialBooking.findFirst({
+      where: { studentId: learner.id },
     });
-    if (existingBooking) {
+    if (existing) {
       return res.status(409).json({
-        error:     'You already have a trial class booked',
-        bookingId: existingBooking.id,
-        slotStart: existingBooking.slotStart,
+        error:     'This learner already has a trial class booked',
+        bookingId: existing.id,
+        status:    existing.status,
       });
     }
-
-    // Step 3 — Race condition guard: re-check slot is still available
-    const slotTaken = await prisma.trialBooking.findFirst({
-      where: {
-        slotStart: slot,
-        status:    { notIn: ['CANCELLED'] },
-      },
-    });
-    if (slotTaken) {
-      return res.status(409).json({
-        error: 'This slot was just taken by someone else. Please select another time.',
-      });
-    }
-
-    // Step 4 — Get student profile for email/WhatsApp
-    const profile = await prisma.studentProfile.findUnique({
-      where: { userId: req.user.id },
-    });
-
-    const courseLabels = {
-      NOORANI_QAIDA:    'Noorani Qaida',
-      QURAN_RECITATION: 'Quran Recitation',
-      TAJWEED:          'Tajweed',
-      HIFZ:             'Hifz Programme',
-      ISLAMIC_STUDIES:  'Islamic Studies',
-      ONE_TO_ONE:       'One-to-One Private',
-    };
-    const courseLabel = courseLabels[courseInterest] || courseInterest;
-
-    const userTimezone = timezone || profile?.timezone || 'UTC';
-    const dateDisplay  = slot.toLocaleDateString('en-GB', {
-      timeZone: userTimezone, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
-    });
-    const timeDisplay  = slot.toLocaleTimeString('en-GB', {
-      timeZone: userTimezone, hour: '2-digit', minute: '2-digit', hour12: false,
-    });
-
-    // Step 5 — Create booking record
+ 
+    const courseLabel = courseInterest
+      .replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+ 
+    // ── Create the booking ────────────────────────────────
     const booking = await prisma.trialBooking.create({
       data: {
-        studentId:        req.user.id,
-        teacherId:        null,         // assigned by admin after booking
+        studentId:        learner.id,
+        teacherId:        null,           // assigned later by admin
         slotStart:        slot,
         durationMins:     30,
         courseInterest,
@@ -603,137 +343,66 @@ router.post('/trial', requireAuth, async (req, res) => {
         status:           'PENDING',
       },
     });
-
-    console.log(`✅ Trial booked: ${booking.id} — ${dateDisplay} ${timeDisplay}`);
-
-    // Step 6 — Create Google Calendar event in universal trials calendar
-    let calEventId = null;
+ 
+    console.log(`✅ Trial booked: ${booking.id} for learner ${learner.name}`);
+ 
+    // ── Google Calendar event (non-fatal) ─────────────────
     try {
-      // const { createUniversalTrialEvent } = await import('../services/googleCalendar.js');
-      calEventId = await createUniversalTrialEvent({
+      const calEventId = await createUniversalTrialEvent({
         slotStart:        slot,
         durationMins:     30,
-        parentName:       profile?.parentName || req.user.email,
-        childName:        childName || profile?.childName || 'Student',
+        parentName:       learner.account.name || learner.account.email,
+        childName:        learner.name,
         courseLabel,
         genderPreference: cleanGender,
-        parentEmail:      req.user.email,
+        parentEmail:      learner.account.email,
       });
-
-      await prisma.trialBooking.update({
-        where: { id: booking.id },
-        data:  { calEventId },
-      });
+      await prisma.trialBooking.update({ where: { id: booking.id }, data: { calEventId } });
     } catch (calErr) {
       console.error('❌ Calendar event creation failed (booking still confirmed):', calErr.message);
     }
-
-    // // Step 7 — Send student confirmation email
-    // try {
-    //   const { sendTrialConfirmation } = await import('../services/email.js');
-    //   await sendTrialConfirmation({
-    //     parentEmail:  dbUser.email,
-    //     parentName:   profile?.parentName || 'Parent',
-    //     childName:    childName || profile?.childName || 'your child',
-    //     courseLabel,
-    //     dateDisplay,
-    //     timeDisplay,
-    //   });
-    // } catch (emailErr) {
-    //   console.error('❌ Student confirmation email failed:', emailErr.message);
-    // }
-
-    // // Step 8 — Send WhatsApp to student
-    // try {
-    //   const { sendTrialConfirmationWA } = await import('../services/whatsapp.js');
-    //   if (profile?.phone) {
-    //     await sendTrialBookingWhatsApp({
-    //       to:          profile.phone,
-    //       parentName:  profile.parentName || 'Parent',
-    //       childName:   childName || profile.childName || 'your child',
-    //       courseLabel,
-    //       dateDisplay,
-    //       timeDisplay,
-    //     });
-    //   }
-    // } catch (waErr) {
-    //   console.error('❌ WhatsApp notification failed:', waErr.message);
-    // }
-
+ 
+    // ── Notifications (non-blocking) ──────────────────────
     const notifications = await Promise.allSettled([
       sendTrialBookingConfirmation({
-        to: req.user.email,
-        parentName: profile?.parentName || 'Parent',
-        childName: profile?.childName || "Your child",
-        // teacherName:     teacher.name,
+        to:              learner.account.email,
+        parentName:      learner.account.name || 'Parent',
+        childName:       learner.name,
         courseLabel,
         slotStart:       slot.toISOString(),
         studentTimezone: userTimezone,
         bookingId:       booking.id,
       }),
-      profile?.phone ? sendTrialBookingWhatsApp({
-        phone: profile.phone,
-        parentName: profile?.parentName || 'Parent',
-        childName: profile?.childName || "Your child",
-        // teacherName: teacher.name,
-        courseLabel,
-        dateDisplay,
-        timeDisplay,
-      }) : Promise.resolve({ success: false, error: 'No phone' }),
+      learner.account.phone
+        ? sendTrialBookingWhatsApp({
+            phone:       learner.account.phone,
+            parentName:  learner.account.name || 'Parent',
+            childName:   learner.name,
+            courseLabel,
+            dateDisplay: slot.toDateString(),
+            timeDisplay: slot.toISOString(),
+          })
+        : Promise.resolve({ success: false, error: 'No phone' }),
     ]);
-  
-    // Log notification results
-    const [emailResult, waResult] = notifications;
-  
+ 
+    const [emailResult] = notifications;
     if (emailResult.status === 'fulfilled' && emailResult.value?.success) {
-      prisma.trialBooking.update({ where: { id: booking.id }, data: { emailSent: true } })
-        .catch(() => {});
-    } else {
-      console.error('⚠️  Email notification failed:', emailResult.reason || emailResult.value?.error);
+      prisma.trialBooking.update({ where: { id: booking.id }, data: { emailSent: true } }).catch(() => {});
     }
-    
-    if (waResult.status === 'fulfilled' && waResult.value?.success) {
-      prisma.trialBooking.update({ where: { id: booking.id }, data: { whatsappSent: true } })
-        .catch(() => {});
-    } else {
-      console.warn('⚠️  WhatsApp notification skipped or failed:', waResult.reason || waResult.value?.error);
-    }
-
-    // Step 9 — Send admin notification emails
-    try {
-      // const { sendAdminTrialNotification } = await import('../services/email.js');
-      await sendAdminTrialNotification({
-        parentName:       profile?.parentName || req.user.email,
-        childName:        childName || profile?.childName || 'Unknown',
-        parentEmail:      req.user.email,
-        phone:            profile?.phone || null,
-        courseLabel,
-        genderPreference: cleanGender,
-        dateDisplay,
-        timeDisplay,
-      });
-    } catch (adminEmailErr) {
-      console.error('❌ Admin notification failed (booking still confirmed):', adminEmailErr.message);
-    }
-
+ 
     return res.status(201).json({
       booking: {
         id:        booking.id,
-        slotStart: booking.slotStart,
         status:    booking.status,
-        courseInterest: booking.courseInterest,
+        slotStart: booking.slotStart,
+        studentId: learner.id,
       },
-      dateDisplay,
-      timeDisplay,
-      message: "Your trial is confirmed. A teacher will be assigned and you'll receive class details within 24 hours.",
+      message: 'Trial class booked successfully. Check your email for confirmation.',
     });
-
   } catch (err) {
     console.error('Trial booking failed:', err);
-    return res.status(500).json({ error: 'Failed to create booking' });
+    return res.status(500).json({ error: 'Failed to book trial class' });
   }
 });
-
-
 
 export default router;

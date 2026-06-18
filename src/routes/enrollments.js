@@ -1,7 +1,22 @@
 // src/routes/enrollment.js
+//
+// REWORKED for the multi-learner model.
+//
+// KEY CHANGES:
+//   • POST /apply now requires `studentId` in the body, validated
+//     against req.studentIds (the account's learners).
+//   • The duplicate-application guard is now PER-LEARNER, not
+//     per-account. A parent with 3 children can have 3 simultaneous
+//     applications — one per child. (This is the fix for the original
+//     multi-child problem.)
+//   • GET /my returns applications across ALL the account's learners,
+//     optionally filtered by ?studentId=.
+//   • Admin email/notification field sources move from
+//     StudentProfile → Student + Student.account (User).
+
 import express from "express";
 import { prisma } from "../lib/prisma.js";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, ownsStudent } from "../middleware/auth.js";
 import {
   sendEnrollmentAdminNotification,
   sendEnrollmentApproved,
@@ -11,34 +26,13 @@ import "dotenv/config";
 
 const router = express.Router();
 
-// ─── Constants ────────────────────────────────────────────
-const VALID_COURSES = [
-  "NOORANI_QAIDA",
-  "QURAN_RECITATION",
-  "TAJWEED",
-  "HIFZ",
-  "ISLAMIC_STUDIES",
-  "ONE_TO_ONE",
-];
-const VALID_DAYS = [
-  "MONDAY",
-  "TUESDAY",
-  "WEDNESDAY",
-  "THURSDAY",
-  "FRIDAY",
-  "SATURDAY",
-  "SUNDAY",
-];
-const VALID_TIMES = ["MORNING", "AFTERNOON", "EVENING"];
-const VALID_GENDER = ["MALE", "FEMALE", "NO_PREFERENCE"];
+const VALID_COURSES = ["NOORANI_QAIDA","QURAN_RECITATION","TAJWEED","HIFZ","ISLAMIC_STUDIES","ONE_TO_ONE"];
+const VALID_DAYS    = ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY","SUNDAY"];
+const VALID_TIMES   = ["MORNING","AFTERNOON","EVENING"];
+const VALID_GENDER  = ["MALE","FEMALE","NO_PREFERENCE"];
 
-// Active statuses — student cannot have more than one of these open
-const ACTIVE_STATUSES = [
-  "PENDING",
-  "UNDER_REVIEW",
-  "APPROVED",
-  "AWAITING_PAYMENT",
-];
+// A learner cannot have more than one of these open AT A TIME
+const ACTIVE_STATUSES = ["PENDING","UNDER_REVIEW","APPROVED","AWAITING_PAYMENT"];
 
 const COURSE_LABELS = {
   NOORANI_QAIDA: "Noorani Qaida",
@@ -51,13 +45,14 @@ const COURSE_LABELS = {
 
 // ─────────────────────────────────────────────────────────
 // POST /api/enrollment/apply
-// Student submits an enrollment application.
-// Guards:
-//   - Cannot have >1 active application
-//   - Cannot apply for a course already actively enrolled in
+// Apply to enroll a SPECIFIC learner in a course.
+// Guards (now per-learner):
+//   - That learner cannot have >1 active application
+//   - That learner cannot already be ACTIVE in this course
 // ─────────────────────────────────────────────────────────
 router.post("/apply", requireAuth, async (req, res) => {
   const {
+    studentId,
     courseType,
     genderPreference,
     preferredDays,
@@ -67,78 +62,68 @@ router.post("/apply", requireAuth, async (req, res) => {
 
   // ── Validation ─────────────────────────────────────────
   const errors = [];
+  if (!studentId) errors.push("studentId is required");
   if (!courseType) errors.push("courseType is required");
   if (courseType && !VALID_COURSES.includes(courseType))
-    errors.push(
-      `Invalid courseType. Must be one of: ${VALID_COURSES.join(", ")}`
-    );
-  if (
-    !preferredDays ||
-    !Array.isArray(preferredDays) ||
-    preferredDays.length === 0
-  )
+    errors.push(`Invalid courseType. Must be one of: ${VALID_COURSES.join(", ")}`);
+  if (!preferredDays || !Array.isArray(preferredDays) || preferredDays.length === 0)
     errors.push("preferredDays must be a non-empty array");
   if (preferredDays && !preferredDays.every((d) => VALID_DAYS.includes(d)))
-    errors.push(
-      `Invalid day in preferredDays. Must be one of: ${VALID_DAYS.join(", ")}`
-    );
+    errors.push(`Invalid day in preferredDays. Must be one of: ${VALID_DAYS.join(", ")}`);
   if (!preferredTime) errors.push("preferredTime is required");
   if (preferredTime && !VALID_TIMES.includes(preferredTime))
-    errors.push(
-      `Invalid preferredTime. Must be one of: ${VALID_TIMES.join(", ")}`
-    );
+    errors.push(`Invalid preferredTime. Must be one of: ${VALID_TIMES.join(", ")}`);
   if (genderPreference && !VALID_GENDER.includes(genderPreference))
-    errors.push(
-      `Invalid genderPreference. Must be one of: ${VALID_GENDER.join(", ")}`
-    );
+    errors.push(`Invalid genderPreference. Must be one of: ${VALID_GENDER.join(", ")}`);
   if (message && message.trim().length > 500)
     errors.push("Message cannot exceed 500 characters");
 
   if (errors.length > 0) {
-    return res
-      .status(400)
-      .json({ error: "Validation failed", details: errors });
+    return res.status(400).json({ error: "Validation failed", details: errors });
+  }
+
+  // ── Ownership: the learner must belong to this account ─
+  if (!ownsStudent(req, studentId)) {
+    return res.status(404).json({ error: "Learner not found" });
   }
 
   try {
-    // ── Guard 1: existing active application ───────────────
-    const existingApplication = await prisma.enrollmentRequest.findFirst({
-      where: {
-        studentId: req.user.id,
-        status: { in: ACTIVE_STATUSES },
-      },
+    // Fetch the learner (for the notification + to confirm existence)
+    const student = await prisma.student.findUnique({
+      where:   { id: studentId },
+      include: { account: { select: { email: true, name: true, phone: true } } },
     });
+    if (!student) {
+      return res.status(404).json({ error: "Learner not found" });
+    }
 
+    // ── Guard 1: existing active application FOR THIS LEARNER ──
+    const existingApplication = await prisma.enrollmentRequest.findFirst({
+      where: { studentId, status: { in: ACTIVE_STATUSES } },
+    });
     if (existingApplication) {
       return res.status(409).json({
-        error: "You already have an active enrollment application",
-        details: `Current status: ${existingApplication.status}. Cancel your existing application before submitting a new one.`,
+        error: "This learner already has an active enrollment application",
+        details: `Current status: ${existingApplication.status}. Cancel it before submitting a new one for this learner.`,
         applicationId: existingApplication.id,
         status: existingApplication.status,
       });
     }
 
-    // ── Guard 2: already actively enrolled in this course ──
+    // ── Guard 2: this learner already ACTIVE in this course ──
     const existingEnrollment = await prisma.enrollment.findFirst({
-      where: {
-        studentId: req.user.id,
-        courseType: courseType,
-        status: "ACTIVE",
-      },
+      where: { studentId, courseType, status: "ACTIVE" },
     });
-
     if (existingEnrollment) {
       return res.status(409).json({
-        error: `You are already actively enrolled in ${
-          COURSE_LABELS[courseType] || courseType
-        }`,
+        error: `This learner is already actively enrolled in ${COURSE_LABELS[courseType] || courseType}`,
       });
     }
 
     // ── Create application ─────────────────────────────────
     const application = await prisma.enrollmentRequest.create({
       data: {
-        studentId: req.user.id,
+        studentId,
         courseType,
         genderPreference: genderPreference || "NO_PREFERENCE",
         preferredDays,
@@ -148,53 +133,59 @@ router.post("/apply", requireAuth, async (req, res) => {
       },
     });
 
-    console.log(
-      `✅ Enrollment application created: ${application.id} by student ${req.user.id}`
-    );
+    console.log(`✅ Enrollment application ${application.id} for learner ${studentId}`);
 
     // ── Admin notification — non-blocking ─────────────────
-    const profile = req.user.studentProfile;
+    // Field sources now: child name from Student, parent contact from Student.account
     sendEnrollmentAdminNotification({
       applicationId: application.id,
-      parentName: profile?.parentName || req.user.email,
-      childName: profile?.childName || "Student",
-      parentEmail: req.user.email,
-      phone: profile?.phone || null,
-      courseLabel: COURSE_LABELS[courseType] || courseType,
+      parentName:    student.account.name || student.account.email,
+      childName:     student.name,
+      parentEmail:   student.account.email,
+      phone:         student.account.phone || null,
+      courseLabel:   COURSE_LABELS[courseType] || courseType,
       genderPreference: genderPreference || "NO_PREFERENCE",
       preferredDays,
       preferredTime,
       message: message?.trim() || null,
-    }).catch((err) =>
-      console.error("⚠️  Enrollment admin notification failed:", err.message)
-    );
+    }).catch((err) => console.error("⚠️  Enrollment admin notification failed:", err.message));
 
     return res.status(201).json({
       application,
-      message:
-        "Your enrollment application has been submitted. We will review it and get back to you within 24 hours.",
+      message: "Your enrollment application has been submitted. We will review it and get back to you within 24 hours.",
     });
   } catch (err) {
     console.error("Enrollment application failed:", err);
-    return res
-      .status(500)
-      .json({ error: "Failed to submit enrollment application" });
+    return res.status(500).json({ error: "Failed to submit enrollment application" });
   }
 });
 
 // ─────────────────────────────────────────────────────────
 // GET /api/enrollment/my
-// All enrollment requests for the logged-in student,
-// ordered by createdAt desc.
+// All enrollment requests across the account's learners.
+// Optional filter: ?studentId=  (must be owned).
 // ─────────────────────────────────────────────────────────
 router.get("/my", requireAuth, async (req, res) => {
+  const { studentId } = req.query;
+
+  // Build the studentId filter
+  let studentFilter;
+  if (studentId) {
+    if (!ownsStudent(req, studentId)) {
+      return res.status(404).json({ error: "Learner not found" });
+    }
+    studentFilter = studentId;
+  } else {
+    studentFilter = { in: req.studentIds };
+  }
+
   try {
     const applications = await prisma.enrollmentRequest.findMany({
-      where: { studentId: req.user.id },
+      where:   { studentId: studentFilter },
+      include: { student: { select: { id: true, name: true } } },
       orderBy: { createdAt: "desc" },
     });
 
-    // Attach human-readable course label
     const enriched = applications.map((a) => ({
       ...a,
       courseLabel: COURSE_LABELS[a.courseType] || a.courseType,
@@ -202,183 +193,125 @@ router.get("/my", requireAuth, async (req, res) => {
 
     return res.json({ applications: enriched, count: enriched.length });
   } catch (err) {
-    console.error("Student enrollment fetch failed:", err);
-    return res
-      .status(500)
-      .json({ error: "Failed to fetch enrollment applications" });
+    console.error("Enrollment fetch failed:", err);
+    return res.status(500).json({ error: "Failed to fetch enrollment applications" });
   }
 });
 
 // ─────────────────────────────────────────────────────────
 // PATCH /api/enrollment/:id/cancel
-// Student can cancel their application only if PENDING.
+// Cancel an application (only if PENDING). Must belong to a
+// learner this account owns.
 // ─────────────────────────────────────────────────────────
 router.patch("/:id/cancel", requireAuth, async (req, res) => {
   const { id } = req.params;
 
   try {
-    const application = await prisma.enrollmentRequest.findUnique({
-      where: { id },
-    });
+    const application = await prisma.enrollmentRequest.findUnique({ where: { id } });
 
-    if (!application || application.studentId !== req.user.id) {
+    // Must exist AND belong to one of this account's learners
+    if (!application || !ownsStudent(req, application.studentId)) {
       return res.status(404).json({ error: "Application not found" });
     }
 
     if (application.status !== "PENDING") {
       return res.status(409).json({
         error: `Cannot cancel an application with status ${application.status}`,
-        details:
-          "Only PENDING applications can be cancelled by students. Contact us to cancel applications that are under review or approved.",
+        details: "Only PENDING applications can be cancelled. Contact us to cancel one that is under review or approved.",
       });
     }
 
     const cancelled = await prisma.enrollmentRequest.update({
       where: { id },
-      data: { status: "CANCELLED" },
+      data:  { status: "CANCELLED" },
     });
 
-    console.log(
-      `✅ Enrollment application ${id} cancelled by student ${req.user.id}`
-    );
-    return res.json({
-      application: cancelled,
-      message: "Application cancelled successfully",
-    });
+    console.log(`✅ Enrollment application ${id} cancelled`);
+    return res.json({ application: cancelled, message: "Application cancelled successfully" });
   } catch (err) {
     console.error("Enrollment cancellation failed:", err);
     return res.status(500).json({ error: "Failed to cancel application" });
   }
 });
 
-// ─────────────────────────────────────────────────────────
-// PATCH /api/admin/enrollments/:id
-// Admin updates application status + notes.
-// No auth middleware here — protected via ADMIN_SECRET header
-// or plug into your admin auth pattern when you have one.
-// For now: requires a shared secret from env.
-// ─────────────────────────────────────────────────────────
-router.patch("/admin/:id", async (req, res) => {
-  // Simple admin secret guard — replace with proper admin role check
-  // when you build the admin panel in a future module
+// ═════════════════════════════════════════════════════════
+// ADMIN ROUTES (x-admin-secret protected — unchanged auth pattern)
+// Field sources updated: Student + Student.account.
+// ═════════════════════════════════════════════════════════
+
+const VALID_ADMIN_STATUSES = ["PENDING","UNDER_REVIEW","APPROVED","AWAITING_PAYMENT","ACTIVE","REJECTED","CANCELLED"];
+
+function requireAdminSecret(req, res, next) {
   const secret = req.headers["x-admin-secret"];
   if (!secret || secret !== process.env.ADMIN_SECRET) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(401).json({ error: "Unauthorized" });
   }
+  next();
+}
 
+// PATCH /api/enrollment/admin/:id
+router.patch("/admin/:id", requireAdminSecret, async (req, res) => {
   const { id } = req.params;
   const { status, adminNotes, rejectionReason } = req.body;
 
-  const VALID_ADMIN_STATUSES = [
-    "UNDER_REVIEW",
-    "APPROVED",
-    "AWAITING_PAYMENT",
-    "ACTIVE",
-    "REJECTED",
-    "CANCELLED",
-  ];
   if (!status || !VALID_ADMIN_STATUSES.includes(status)) {
-    return res
-      .status(400)
-      .json({
-        error: `Invalid status. Must be one of: ${VALID_ADMIN_STATUSES.join(
-          ", "
-        )}`,
-      });
+    return res.status(400).json({ error: `Invalid status. Must be one of: ${VALID_ADMIN_STATUSES.join(", ")}` });
   }
-
   if (status === "REJECTED" && !rejectionReason?.trim()) {
-    return res
-      .status(400)
-      .json({
-        error: "rejectionReason is required when rejecting an application",
-      });
+    return res.status(400).json({ error: "rejectionReason is required when rejecting an application" });
   }
 
   try {
     const existing = await prisma.enrollmentRequest.findUnique({
-      where: { id },
+      where:   { id },
       include: {
         student: {
           select: {
-            email: true,
-            studentProfile: { select: { parentName: true, childName: true } },
+            name: true,
+            account: { select: { email: true, name: true } },
           },
         },
       },
     });
-
     if (!existing) {
       return res.status(404).json({ error: "Application not found" });
     }
 
     const updateData = { status };
-    if (adminNotes !== undefined)
-      updateData.adminNotes = adminNotes?.trim() || null;
-    if (rejectionReason !== undefined)
-      updateData.rejectionReason = rejectionReason?.trim() || null;
+    if (adminNotes !== undefined)      updateData.adminNotes      = adminNotes?.trim() || null;
+    if (rejectionReason !== undefined) updateData.rejectionReason = rejectionReason?.trim() || null;
 
-    const updated = await prisma.enrollmentRequest.update({
-      where: { id },
-      data: updateData,
-    });
+    const updated = await prisma.enrollmentRequest.update({ where: { id }, data: updateData });
 
     console.log(`✅ Enrollment ${id} updated to ${status} by admin`);
 
-    // ── Send student email based on new status ─────────────
-    const profile = existing.student.studentProfile;
-    const parentName = profile?.parentName || existing.student.email;
-    const childName = profile?.childName || "your child";
-    const courseLabel =
-      COURSE_LABELS[existing.courseType] || existing.courseType;
+    // Field sources: child name from Student, contact from Student.account
+    const toEmail    = existing.student.account.email;
+    const parentName = existing.student.account.name || toEmail;
+    const childName  = existing.student.name || "your child";
+    const courseLabel = COURSE_LABELS[existing.courseType] || existing.courseType;
 
     if (status === "APPROVED") {
-      sendEnrollmentApproved({
-        to: existing.student.email,
-        parentName,
-        childName,
-        courseLabel,
-        applicationId: id,
-      }).catch((err) =>
-        console.error("⚠️  Approval email failed:", err.message)
-      );
+      sendEnrollmentApproved({ to: toEmail, parentName, childName, courseLabel, applicationId: id })
+        .catch((err) => console.error("⚠️  Approval email failed:", err.message));
     }
-
     if (status === "REJECTED") {
-      sendEnrollmentRejected({
-        to: existing.student.email,
-        parentName,
-        childName,
-        courseLabel,
-        rejectionReason: rejectionReason.trim(),
-      }).catch((err) =>
-        console.error("⚠️  Rejection email failed:", err.message)
-      );
+      sendEnrollmentRejected({ to: toEmail, parentName, childName, courseLabel, rejectionReason: rejectionReason.trim() })
+        .catch((err) => console.error("⚠️  Rejection email failed:", err.message));
     }
 
     return res.json({ application: updated });
   } catch (err) {
     console.error("Admin enrollment update failed:", err);
-    return res
-      .status(500)
-      .json({ error: "Failed to update enrollment application" });
+    return res.status(500).json({ error: "Failed to update enrollment application" });
   }
 });
 
-// ─────────────────────────────────────────────────────────
-// GET /api/admin/enrollments
-// List all applications — admin only (same secret guard).
-// Query: ?status=  ?courseType=
-// ─────────────────────────────────────────────────────────
-router.get("/admin", async (req, res) => {
-  const secret = req.headers["x-admin-secret"];
-  if (!secret || secret !== process.env.ADMIN_SECRET) {
-    return res.status(403).json({ error: "Forbidden" });
-  }
-
+// GET /api/enrollment/admin  — list all applications
+router.get("/admin", requireAdminSecret, async (req, res) => {
   const { status, courseType } = req.query;
   const where = {};
-  if (status) where.status = status;
+  if (status)     where.status     = status;
   if (courseType) where.courseType = courseType;
 
   try {
@@ -387,34 +320,17 @@ router.get("/admin", async (req, res) => {
       include: {
         student: {
           select: {
-            id: true,
-            email: true,
-            studentProfile: {
-              select: {
-                parentName: true,
-                childName: true,
-                phone: true,
-                country: true,
-                timezone: true,
-              },
-            },
+            id: true, name: true, age: true, country: true, timezone: true,
+            account: { select: { email: true, name: true, phone: true } },
           },
         },
       },
       orderBy: { createdAt: "desc" },
     });
-
-    const enriched = applications.map((a) => ({
-      ...a,
-      courseLabel: COURSE_LABELS[a.courseType] || a.courseType,
-    }));
-
-    return res.json({ applications: enriched, count: enriched.length });
+    return res.json({ applications, count: applications.length });
   } catch (err) {
     console.error("Admin enrollment list failed:", err);
-    return res
-      .status(500)
-      .json({ error: "Failed to fetch enrollment applications" });
+    return res.status(500).json({ error: "Failed to fetch applications" });
   }
 });
 

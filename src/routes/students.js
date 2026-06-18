@@ -1,138 +1,216 @@
 // src/routes/students.js
+//
+// REWORKED for the multi-learner model.
+// One account (req.user) manages many Student records (req.studentIds).
+// This router now also absorbs everything the old parent.js did —
+// parents and solo students hit the SAME endpoints. The only difference
+// is how many Students they manage.
+//
+// Ownership rule: every per-learner route validates :studentId against
+// req.studentIds and returns 404 (not 403) if not owned — never reveal
+// that another account's student exists.
+
 import express from 'express';
 import { prisma } from '../lib/prisma.js';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, ownsStudent } from '../middleware/auth.js';
 
 const router = express.Router();
 
+const VALID_COURSES = ['NOORANI_QAIDA','QURAN_RECITATION','TAJWEED','HIFZ','ISLAMIC_STUDIES','ONE_TO_ONE'];
+
+// ═════════════════════════════════════════════════════════
+// ACCOUNT + LEARNERS
+// ═════════════════════════════════════════════════════════
+
 // ─────────────────────────────────────────────────────────
-// POST /api/students/profile
-// Creates the StudentProfile after registration.
-// Called once immediately after Clerk signup flow completes.
+// GET /api/students
+// Returns the account holder + the list of all their learners.
+// Replaces the old GET /profile (which returned one profile).
 // ─────────────────────────────────────────────────────────
-router.post('/profile', requireAuth, async (req, res) => {
-  const { parentName, childName, childAge, country, timezone, courseInterest, phone } = req.body;
+router.get('/', requireAuth, async (req, res) => {
+  try {
+    const students = await prisma.student.findMany({
+      where:   { accountId: req.user.id },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return res.json({
+      account: {
+        id:    req.user.id,
+        email: req.user.email,
+        role:  req.user.role,
+        name:  req.user.name,
+        phone: req.user.phone,
+      },
+      students,
+    });
+  } catch (err) {
+    console.error('Account/students fetch failed:', err);
+    return res.status(500).json({ error: 'Failed to fetch account' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// POST /api/students
+// Create a NEW learner under this account. Callable many times
+// (this is the "add a child" action). Also used for the very
+// first learner during onboarding.
+//
+// Optionally accepts account-holder fields (name/phone) to set on
+// the User if not already set — used by the first-time onboarding.
+//
+// isSelf=true marks a solo-adult learner (the account holder is the
+// learner themselves).
+// ─────────────────────────────────────────────────────────
+router.post('/', requireAuth, async (req, res) => {
+  const {
+    name, age, country, timezone, courseInterest, gender, isSelf,
+    accountName, accountPhone, // optional: set on the User
+  } = req.body;
 
   const missing = [];
-  if (!parentName)     missing.push('parentName');
-  if (!childName)      missing.push('childName');
-  if (!childAge)       missing.push('childAge');
+  if (!name)           missing.push('name');
+  if (age === undefined) missing.push('age');
   if (!country)        missing.push('country');
   if (!timezone)       missing.push('timezone');
   if (!courseInterest) missing.push('courseInterest');
-
-  if (missing.length > 0) {
+  if (missing.length) {
     return res.status(400).json({ error: `Missing required fields: ${missing.join(', ')}` });
   }
 
-  if (req.user.studentProfile) {
-    return res.status(409).json({ error: 'Profile already exists', profileId: req.user.studentProfile.id });
+  if (!VALID_COURSES.includes(courseInterest)) {
+    return res.status(400).json({ error: 'Invalid courseInterest value' });
   }
 
-  const validCourses = ['NOORANI_QAIDA','QURAN_RECITATION','TAJWEED','HIFZ','ISLAMIC_STUDIES','ONE_TO_ONE'];
-  if (!validCourses.includes(courseInterest)) {
-    return res.status(400).json({ error: 'Invalid course interest value' });
-  }
-
-  const age = parseInt(childAge, 10);
-  if (isNaN(age) || age < 4 || age > 18) {
-    return res.status(400).json({ error: 'Child age must be between 4 and 18' });
+  const ageNum = parseInt(age, 10);
+  if (isNaN(ageNum) || ageNum < 4 || ageNum > 99) {
+    return res.status(400).json({ error: 'Age must be between 4 and 99' });
   }
 
   try {
-    const profile = await prisma.studentProfile.create({
+    // Optionally backfill account-holder info on first onboarding
+    if (accountName || accountPhone) {
+      await prisma.user.update({
+        where: { id: req.user.id },
+        data: {
+          ...(accountName  && !req.user.name  ? { name:  accountName.trim()  } : {}),
+          ...(accountPhone && !req.user.phone ? { phone: accountPhone.trim() } : {}),
+        },
+      });
+    }
+
+    const student = await prisma.student.create({
       data: {
-        userId:         req.user.id,
-        parentName:     parentName.trim(),
-        childName:      childName.trim(),
-        childAge:       age,
+        accountId:      req.user.id,
+        name:           name.trim(),
+        age:            ageNum,
         country:        country.trim(),
-        timezone,
+        timezone:       timezone.trim(),
         courseInterest,
-        phone:          phone?.trim() || null,
+        gender:         gender?.trim() || null,
+        isSelf:         isSelf === true,
       },
     });
 
-    console.log(`✅ StudentProfile created for user: ${req.user.email}`);
-    return res.status(201).json({ profile });
+    console.log(`✅ Student created (${student.name}) under account ${req.user.email}`);
+    return res.status(201).json({ student });
   } catch (err) {
-    console.error('Failed to create StudentProfile:', err);
-    return res.status(500).json({ error: 'Failed to create profile' });
+    console.error('Student create failed:', err);
+    return res.status(500).json({ error: 'Failed to create learner' });
   }
 });
 
 // ─────────────────────────────────────────────────────────
-// GET /api/students/profile
-// Returns the current user + their profile.
+// PATCH /api/students/:studentId
+// Update one learner. Ownership-checked.
+// Replaces the old PATCH /profile.
 // ─────────────────────────────────────────────────────────
-router.get('/profile', requireAuth, async (req, res) => {
-  return res.json({
-    user: {
-      id:    req.user.id,
-      email: req.user.email,
-      role:  req.user.role,
-    },
-    profile: req.user.studentProfile || null,
-  });
-});
+router.patch('/:studentId', requireAuth, async (req, res) => {
+  const { studentId } = req.params;
 
-// ─────────────────────────────────────────────────────────
-// PATCH /api/students/profile
-// Student updates their own profile fields.
-// ─────────────────────────────────────────────────────────
-router.patch('/profile', requireAuth, async (req, res) => {
-  const { parentName, childName, childAge, country, timezone, phone } = req.body;
-
-  if (!req.user.studentProfile) {
-    return res.status(404).json({ error: 'Profile not found. Create one first via POST /api/students/profile' });
+  if (!ownsStudent(req, studentId)) {
+    return res.status(404).json({ error: 'Learner not found' });
   }
 
-  if (childAge !== undefined) {
-    const age = parseInt(childAge, 10);
-    if (isNaN(age) || age < 4 || age > 18) {
-      return res.status(400).json({ error: 'Child age must be between 4 and 18' });
+  const { name, age, country, timezone, gender } = req.body;
+
+  const data = {};
+  if (name     !== undefined) data.name     = name.trim();
+  if (country  !== undefined) data.country  = country.trim();
+  if (timezone !== undefined) data.timezone = timezone.trim();
+  if (gender   !== undefined) data.gender   = gender?.trim() || null;
+  if (age      !== undefined) {
+    const ageNum = parseInt(age, 10);
+    if (isNaN(ageNum) || ageNum < 4 || ageNum > 99) {
+      return res.status(400).json({ error: 'Age must be between 4 and 99' });
     }
+    data.age = ageNum;
   }
 
-  const updateData = {};
-  if (parentName !== undefined) updateData.parentName = parentName.trim();
-  if (childName  !== undefined) updateData.childName  = childName.trim();
-  if (childAge   !== undefined) updateData.childAge   = parseInt(childAge, 10);
-  if (country    !== undefined) updateData.country    = country.trim();
-  if (timezone   !== undefined) updateData.timezone   = timezone.trim();
-  if (phone      !== undefined) updateData.phone      = phone?.trim() || null;
-
-  if (Object.keys(updateData).length === 0) {
+  if (Object.keys(data).length === 0) {
     return res.status(400).json({ error: 'No fields provided to update' });
   }
 
   try {
-    const profile = await prisma.studentProfile.update({
-      where: { userId: req.user.id },
-      data:  updateData,
+    const student = await prisma.student.update({
+      where: { id: studentId },
+      data,
     });
-    console.log(`✅ StudentProfile updated for user: ${req.user.email}`);
-    return res.json({ profile });
+    return res.json({ student });
   } catch (err) {
-    console.error('Profile update failed:', err);
-    return res.status(500).json({ error: 'Failed to update profile' });
+    console.error('Student update failed:', err);
+    return res.status(500).json({ error: 'Failed to update learner' });
   }
 });
 
 // ─────────────────────────────────────────────────────────
-// GET /api/students/sessions
-// Upcoming + past sessions for the logged-in student.
-// Upcoming: SCHEDULED, asc by scheduledAt
-// Past: COMPLETED | MISSED | CANCELLED, desc, last 20
+// PATCH /api/students/account
+// Update the account holder's own name/phone.
+// (Note: registered BEFORE /:studentId is irrelevant here because
+//  the path segment differs, but we keep account routes grouped.)
 // ─────────────────────────────────────────────────────────
-router.get('/sessions', requireAuth, async (req, res) => {
+router.patch('/account/me', requireAuth, async (req, res) => {
+  const { name, phone } = req.body;
+  const data = {};
+  if (name  !== undefined) data.name  = name?.trim()  || null;
+  if (phone !== undefined) data.phone = phone?.trim() || null;
+
+  if (Object.keys(data).length === 0) {
+    return res.status(400).json({ error: 'No fields provided to update' });
+  }
+
+  try {
+    const user = await prisma.user.update({
+      where:  { id: req.user.id },
+      data,
+      select: { id: true, email: true, name: true, phone: true, role: true },
+    });
+    return res.json({ account: user });
+  } catch (err) {
+    console.error('Account update failed:', err);
+    return res.status(500).json({ error: 'Failed to update account' });
+  }
+});
+
+// ═════════════════════════════════════════════════════════
+// PER-LEARNER DATA (sessions / progress / assignments)
+// All ownership-checked against req.studentIds.
+// ═════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────
+// GET /api/students/:studentId/sessions
+// Upcoming + past sessions for one learner.
+// ─────────────────────────────────────────────────────────
+router.get('/:studentId/sessions', requireAuth, async (req, res) => {
+  const { studentId } = req.params;
+  if (!ownsStudent(req, studentId)) {
+    return res.status(404).json({ error: 'Learner not found' });
+  }
+
   try {
     const [upcoming, past] = await Promise.all([
       prisma.classSession.findMany({
-        where: {
-          studentId: req.user.id,
-          status:    'SCHEDULED',
-        },
+        where:   { studentId, status: 'SCHEDULED' },
         include: {
           teacher:    { select: { name: true, gender: true } },
           attendance: { select: { status: true } },
@@ -141,10 +219,7 @@ router.get('/sessions', requireAuth, async (req, res) => {
         take:    20,
       }),
       prisma.classSession.findMany({
-        where: {
-          studentId: req.user.id,
-          status:    { in: ['COMPLETED', 'MISSED', 'CANCELLED'] },
-        },
+        where:   { studentId, status: { in: ['COMPLETED', 'MISSED', 'CANCELLED'] } },
         include: {
           teacher:    { select: { name: true, gender: true } },
           attendance: { select: { status: true } },
@@ -156,25 +231,30 @@ router.get('/sessions', requireAuth, async (req, res) => {
 
     return res.json({ upcoming, past });
   } catch (err) {
-    console.error('Student sessions fetch failed:', err);
+    console.error('Sessions fetch failed:', err);
     return res.status(500).json({ error: 'Failed to fetch sessions' });
   }
 });
 
 // ─────────────────────────────────────────────────────────
-// GET /api/students/progress
-// Attendance stats + last 10 SENT progress reports.
+// GET /api/students/:studentId/progress
+// Attendance stats + last 10 SENT progress reports for one learner.
 // ─────────────────────────────────────────────────────────
-router.get('/progress', requireAuth, async (req, res) => {
+router.get('/:studentId/progress', requireAuth, async (req, res) => {
+  const { studentId } = req.params;
+  if (!ownsStudent(req, studentId)) {
+    return res.status(404).json({ error: 'Learner not found' });
+  }
+
   try {
     const [attendanceRecords, reports] = await Promise.all([
       prisma.attendanceRecord.findMany({
-        where:   { studentId: req.user.id },
+        where:   { studentId },
         select:  { status: true, markedAt: true },
         orderBy: { markedAt: 'desc' },
       }),
       prisma.progressReport.findMany({
-        where:   { studentId: req.user.id, status: 'SENT' },
+        where:   { studentId, status: 'SENT' },
         include: { teacher: { select: { name: true } } },
         orderBy: { sentAt: 'desc' },
         take:    10,
@@ -194,25 +274,66 @@ router.get('/progress', requireAuth, async (req, res) => {
       reports,
     });
   } catch (err) {
-    console.error('Student progress fetch failed:', err);
+    console.error('Progress fetch failed:', err);
     return res.status(500).json({ error: 'Failed to fetch progress' });
   }
 });
 
 // ─────────────────────────────────────────────────────────
-// GET /api/students/assignments
-// All assignments for the student, asc by dueDate.
-// Query: ?status=PENDING|SUBMITTED|GRADED|OVERDUE
+// GET /api/students/:studentId/attendance
+// Full attendance history for one learner (used by the
+// attendance tab in the unified dashboard).
 // ─────────────────────────────────────────────────────────
-router.get('/assignments', requireAuth, async (req, res) => {
-  const { status } = req.query;
-
-  const validStatuses = ['PENDING', 'SUBMITTED', 'GRADED', 'OVERDUE'];
-  if (status && !validStatuses.includes(status)) {
-    return res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
+router.get('/:studentId/attendance', requireAuth, async (req, res) => {
+  const { studentId } = req.params;
+  if (!ownsStudent(req, studentId)) {
+    return res.status(404).json({ error: 'Learner not found' });
   }
 
-  const where = { studentId: req.user.id };
+  try {
+    const records = await prisma.attendanceRecord.findMany({
+      where:   { studentId },
+      include: {
+        session: { select: { scheduledAt: true, courseType: true } },
+        teacher: { select: { name: true } },
+      },
+      orderBy: { markedAt: 'desc' },
+    });
+
+    const total   = records.length;
+    const present = records.filter(r => r.status === 'PRESENT').length;
+    const late    = records.filter(r => r.status === 'LATE').length;
+    const absent  = records.filter(r => r.status === 'ABSENT').length;
+    const excused = records.filter(r => r.status === 'EXCUSED').length;
+    const percentage = total > 0 ? Math.round(((present + late) / total) * 100) : 0;
+
+    return res.json({
+      stats: { total, present, late, absent, excused, percentage },
+      records,
+    });
+  } catch (err) {
+    console.error('Attendance fetch failed:', err);
+    return res.status(500).json({ error: 'Failed to fetch attendance' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// GET /api/students/:studentId/assignments
+// All assignments for one learner. Query: ?status=
+// ─────────────────────────────────────────────────────────
+router.get('/:studentId/assignments', requireAuth, async (req, res) => {
+  const { studentId } = req.params;
+  if (!ownsStudent(req, studentId)) {
+    return res.status(404).json({ error: 'Learner not found' });
+  }
+
+  const { status } = req.query;
+  const valid = ['PENDING', 'SUBMITTED', 'GRADED', 'OVERDUE'];
+  if (status && !valid.includes(status)) {
+    return res.status(400).json({ error: `Invalid status. Must be one of: ${valid.join(', ')}` });
+  }
+
+  const where = { studentId };
   if (status) where.status = status;
 
   try {
@@ -224,85 +345,64 @@ router.get('/assignments', requireAuth, async (req, res) => {
       },
       orderBy: { dueDate: 'asc' },
     });
-
     return res.json({ assignments, count: assignments.length });
   } catch (err) {
-    console.error('Student assignments fetch failed:', err);
+    console.error('Assignments fetch failed:', err);
     return res.status(500).json({ error: 'Failed to fetch assignments' });
   }
 });
 
 // ─────────────────────────────────────────────────────────
-// POST /api/students/assignments/:id/submit
-// Student submits an assignment.
-// Body: { content, fileUrl }
+// POST /api/students/:studentId/assignments/:id/submit
+// Account holder submits an assignment on the learner's behalf
+// (read-write — confirmed product decision). Ownership-checked.
 // ─────────────────────────────────────────────────────────
+router.post('/:studentId/assignments/:id/submit', requireAuth, async (req, res) => {
+  const { studentId, id } = req.params;
+  if (!ownsStudent(req, studentId)) {
+    return res.status(404).json({ error: 'Learner not found' });
+  }
 
-router.post('/assignments/:id/submit', requireAuth, async (req, res) => {
-  const { id }                            = req.params;
   const { content, fileUrl, fileName, fileType } = req.body;
- 
-  // Must have at least one of: content or fileUrl
+
   if (!content && !fileUrl) {
     return res.status(400).json({ error: 'Provide either content (text) or a file upload' });
   }
- 
-  // Content length guard
   if (content && content.trim().length > 3000) {
     return res.status(400).json({ error: 'Content exceeds 3000 character limit' });
   }
- 
-  // URL format guard (Supabase Storage URLs are always valid https)
   if (fileUrl) {
     try { new URL(fileUrl); } catch {
       return res.status(400).json({ error: 'fileUrl must be a valid URL' });
     }
   }
- 
-  // fileType length guard
-  if (fileType && fileType.length > 100) {
-    return res.status(400).json({ error: 'Invalid fileType' });
-  }
- 
-  // fileName length guard
-  if (fileName && fileName.length > 500) {
-    return res.status(400).json({ error: 'Invalid fileName' });
-  }
- 
+
   try {
     const assignment = await prisma.assignment.findUnique({
       where:   { id },
       include: { submission: true },
     });
- 
-    // Must exist and belong to this student
-    if (!assignment || assignment.studentId !== req.user.id) {
+
+    // Must exist AND belong to THIS learner
+    if (!assignment || assignment.studentId !== studentId) {
       return res.status(404).json({ error: 'Assignment not found' });
     }
- 
-    // Already submitted
     if (assignment.submission) {
-      return res.status(409).json({
-        error: 'Assignment already submitted. Contact your teacher to allow resubmission.',
-      });
+      return res.status(409).json({ error: 'Assignment already submitted. Contact your teacher to allow resubmission.' });
     }
- 
-    // Cannot submit a graded assignment
     if (assignment.status === 'GRADED') {
       return res.status(409).json({ error: 'Cannot submit a graded assignment' });
     }
- 
-    // Create submission + update assignment status in one transaction
+
     const [submission] = await prisma.$transaction([
       prisma.assignmentSubmission.create({
         data: {
           assignmentId: id,
-          studentId:    req.user.id,
-          content:      content?.trim() || null,
-          // ── NEW: file fields ──────────────────────────
-          fileUrl:      fileUrl?.trim()  || null,
-          fileName:     fileName?.trim() || null,
-          fileType:     fileType?.trim() || null,
+          studentId,
+          content:  content?.trim()  || null,
+          fileUrl:  fileUrl?.trim()  || null,
+          fileName: fileName?.trim() || null,
+          fileType: fileType?.trim() || null,
         },
       }),
       prisma.assignment.update({
@@ -310,8 +410,8 @@ router.post('/assignments/:id/submit', requireAuth, async (req, res) => {
         data:  { status: 'SUBMITTED' },
       }),
     ]);
- 
-    console.log(`✅ Assignment ${id} submitted by student ${req.user.id}${fileUrl ? ' with file' : ''}`);
+
+    console.log(`✅ Assignment ${id} submitted for learner ${studentId}${fileUrl ? ' with file' : ''}`);
     return res.status(201).json({ submission });
   } catch (err) {
     console.error('Submission failed:', err);

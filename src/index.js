@@ -11,7 +11,6 @@ import bookingRouter  from './routes/booking.js';
 import leadsRouter from './routes/leads.js';
 import teacherRouter from "./routes/teacher.js"
 import enrollmentRouter from './routes/enrollments.js';
-import parentRouter from './routes/parent.js';
 
 import {
   teacherLimiter,
@@ -92,7 +91,6 @@ app.use('/api/booking', bookingLimiter, bookingRouter);
 app.use('/api/leads', leadsRouter);
 app.use('/api/teacher', teacherLimiter, teacherRouter);   // ADD THIS
 app.use('/api/enrollment', enrollmentRouter);
-app.use('/api/parent', parentRouter);
 // Uncomment as you build each phase
 
 // ── 404 handler ────────────────────────────────────────────

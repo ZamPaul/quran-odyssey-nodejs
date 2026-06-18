@@ -1,10 +1,25 @@
 // src/routes/webhooks.js
+//
+// REWORKED for the multi-learner model.
+//
+// KEY CHANGES:
+//   • user.created now defaults role to PARENT (the account holder).
+//     A self-registered user is an account holder who will create one
+//     or more Student records during onboarding. We do NOT auto-create
+//     a Student here — that happens in the onboarding step where we
+//     collect the learner's name/age.
+//   • user.updated no longer creates a ParentProfile stub (that model
+//     is being retired). It only syncs email + role.
+//   • user.deleted cascades to the account's Student rows (via
+//     onDelete: Cascade on Student.accountId) and all their data.
+
 import express from "express";
 import { Webhook } from "svix";
 import { prisma } from "../lib/prisma.js";
-import e from "express";
 
 const router = express.Router();
+
+const VALID_ROLES = ['STUDENT', 'TEACHER', 'ADMIN', 'PARENT'];
 
 router.post("/clerk", async (req, res) => {
   const WEBHOOK_SECRET = process.env.CLERK_WEBHOOK_SECRET;
@@ -14,18 +29,14 @@ router.post("/clerk", async (req, res) => {
     return res.status(500).json({ error: "Webhook secret not configured" });
   }
 
-  // svix sends these three headers with every webhook
   const svixHeaders = {
-    "svix-id": req.headers["svix-id"],
+    "svix-id":        req.headers["svix-id"],
     "svix-timestamp": req.headers["svix-timestamp"],
     "svix-signature": req.headers["svix-signature"],
   };
 
-  // Verify the webhook signature
-  // req.body is a Buffer here because of express.raw() in index.js
   const wh = new Webhook(WEBHOOK_SECRET);
   let event;
-
   try {
     event = wh.verify(req.body, svixHeaders);
   } catch (err) {
@@ -36,39 +47,31 @@ router.post("/clerk", async (req, res) => {
   const { type, data } = event;
   console.log(`📨 Clerk webhook received: ${type}`);
 
-  // ─── user.created ──────────────────────────────────
+  // ─── user.created ──────────────────────────────────────
   if (type === "user.created") {
     const email = data?.email_addresses?.[0]?.email_address;
-
     if (!email) {
       console.error("No email found on user.created event");
       return res.status(400).json({ error: "No email on user" });
     }
 
-    // Read role from Clerk publicMetadata
-    // Admin sets this when creating teacher accounts
-    // Defaults to STUDENT for all self-registered users
-    const rawRole    = data.public_metadata?.role || 'STUDENT';
-    const validRoles = ['STUDENT', 'TEACHER', 'ADMIN', 'PARENT'];
-    const role       = validRoles.includes(rawRole) ? rawRole : 'STUDENT';
-
-    console.log("raw role:", rawRole)
-    console.log("new role:", role)
+    // Default role is now PARENT (account holder).
+    // Admin still sets TEACHER explicitly via Clerk publicMetadata.
+    const rawRole = data.public_metadata?.role || 'PARENT';
+    const role    = VALID_ROLES.includes(rawRole) ? rawRole : 'PARENT';
 
     try {
       const user = await prisma.user.create({
         data: {
           clerkId: data.id,
-          email: email,      
+          email,
           role,
+          // name/phone are filled during onboarding (POST /api/students)
         },
       });
-        
-      console.log(`✅ User created in DB: ${user.email} (${user.id})`);
-
+      console.log(`✅ User created in DB: ${user.email} (${user.id}) as ${role}`);
+      // NOTE: intentionally NO Student auto-created here.
     } catch (err) {
-      // P2002 = unique constraint violation — user already exists
-      // This can happen if the webhook fires twice (Clerk retries on timeout)
       if (err.code === "P2002") {
         console.log(`⚠️  User already exists in DB, skipping: ${data.id}`);
       } else {
@@ -78,58 +81,37 @@ router.post("/clerk", async (req, res) => {
     }
   }
 
-  // ─── user.updated ──────────────────────────────────
+  // ─── user.updated ──────────────────────────────────────
   if (type === "user.updated") {
-    const email = data?.email_addresses?.[0]?.email_address;
+    const email   = data?.email_addresses?.[0]?.email_address;
     const rawRole = data.public_metadata?.role;
-    
+
     try {
       const updateData = {};
-      if (email)   updateData.email = email;
-      if (rawRole && ['STUDENT', 'TEACHER', 'ADMIN', 'PARENT'].includes(rawRole)) {
-        updateData.role = rawRole;
-      }
-
-      let user;
+      if (email) updateData.email = email;
+      if (rawRole && VALID_ROLES.includes(rawRole)) updateData.role = rawRole;
 
       if (Object.keys(updateData).length > 0) {
-        user = await prisma.user.update({
+        await prisma.user.update({
           where: { clerkId: data.id },
           data:  updateData,
         });
         console.log(`✅ User updated: ${data.id}`);
       }
-
-      // If role is PARENT, create a stub ParentProfile
-      if (rawRole === 'PARENT') {
-        try {
-          await prisma.parentProfile.create({
-            data: {
-              userId: user.id,
-              name: user.email.split('@')[0], // admin will fill in real name via Supabase
-            },
-          });
-          console.log(`✅ ParentProfile stub created for: ${email}`);
-        } catch (err) {
-          // Don't crash the webhook — profile can be created manually
-          console.error('⚠️  ParentProfile stub creation failed:', err.message);
-        }
-      }
-
+      // NOTE: no ParentProfile stub creation — that model is retired.
     } catch (err) {
       console.error('❌ Failed to update user:', err);
     }
   }
 
-  // ─── user.deleted ──────────────────────────────────
+  // ─── user.deleted ──────────────────────────────────────
   if (type === "user.deleted") {
     try {
-      await prisma.user.delete({
-        where: { clerkId: data.id },
-      });
+      await prisma.user.delete({ where: { clerkId: data.id } });
       console.log(`✅ User deleted from DB: ${data.id}`);
+      // Student rows + their learning data cascade-delete via
+      // onDelete: Cascade on Student.accountId.
     } catch (err) {
-      // User might not exist if creation failed earlier
       if (err.code === "P2025") {
         console.log(`⚠️  User not found in DB for deletion: ${data.id}`);
       } else {
@@ -138,7 +120,6 @@ router.post("/clerk", async (req, res) => {
     }
   }
 
-  // Always return 200 — Clerk retries any non-2xx response
   return res.status(200).json({ received: true });
 });
 

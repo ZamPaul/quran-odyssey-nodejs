@@ -107,28 +107,65 @@ model User {
   clerkId   String   @unique
   email     String   @unique
   role      Role     @default(STUDENT)
+
+  // NEW — account-holder contact info (locked decision #1)
+  name      String?
+  phone     String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // Module 1 relations
-  studentProfile StudentProfile?
-  trialBookings  TrialBooking[]
+  // NEW — the learners this account owns/manages
+  managedStudents Student[] @relation("AccountStudents")
 
-  // Module 2 relations (NEW)
-  classSessions         ClassSession[]         @relation("StudentSessions")
-  enrollments           Enrollment[]           @relation("StudentEnrollments")
-  assignments           Assignment[]           @relation("StudentAssignments")
-  progressReports       ProgressReport[]       @relation("StudentReports")
-  attendanceRecords     AttendanceRecord[]     @relation("StudentAttendance")
+  // KEPT — existing relations, unchanged. These still point at User
+  // because the DB foreign keys still reference `users`. They are
+  // removed at the end of Phase 2 when the 8 FKs are flipped to Student.
+  studentProfile        StudentProfile?
   teacher               Teacher?               @relation("TeacherUser")
-  assignmentSubmissions AssignmentSubmission[]
-
-  enrollmentRequests EnrollmentRequest[]
-  parentProfile      ParentProfile?
-  parentLinks        ParentChildLink[]   @relation("ParentLinks")
-  childLinks         ParentChildLink[]   @relation("ChildLinks")
+  parentProfile         ParentProfile?
+  parentLinks           ParentChildLink[]      @relation("ParentLinks")
+  childLinks            ParentChildLink[]      @relation("ChildLinks")
 
   @@map("users")
+}
+
+model Student {
+  id        String @id @default(cuid())
+
+  // The account holder who owns/manages this learner
+  accountId String
+  account   User   @relation("AccountStudents", fields: [accountId], references: [id], onDelete: Cascade)
+
+  // Learner details (will be backfilled from StudentProfile in Phase 2)
+  name           String
+  age            Int
+  country        String
+  timezone       String
+  gender         String?         // for teacher matching; optional
+  courseInterest CourseInterest
+
+  // true when the account holder IS the learner (solo adult)
+  isSelf    Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // NOTE: No trialBookings / enrollments / classSessions / assignments /
+  // assignmentSubmissions / progressReports / attendanceRecords /
+  // enrollmentRequests here YET. They are added in Phase 2's FK-flip
+  // migration, together with repointing the other side of each relation.
+  trialBookings         TrialBooking[]
+  enrollmentRequests    EnrollmentRequest[]
+  enrollments           Enrollment[]           @relation("StudentEnrollments")
+  classSessions         ClassSession[]         @relation("StudentSessions")
+  assignments           Assignment[]           @relation("StudentAssignments")
+  assignmentSubmissions AssignmentSubmission[]
+  progressReports       ProgressReport[]       @relation("StudentReports")
+  attendanceRecords     AttendanceRecord[]     @relation("StudentAttendance")
+
+  @@index([accountId])
+  @@map("students")
 }
 
 // ─────────────────────────────────────────────────────────
@@ -208,7 +245,7 @@ model TrialBooking {
   createdAt        DateTime       @default(now())
   updatedAt        DateTime       @updatedAt
 
-  student User     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  student Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
   teacher Teacher? @relation(fields: [teacherId], references: [id])
 
   classSession ClassSession?
@@ -250,7 +287,7 @@ model ClassSession {
   teacher   Teacher @relation("TeacherSessions", fields: [teacherId], references: [id])
 
   studentId String
-  student   User   @relation("StudentSessions", fields: [studentId], references: [id])
+  student   Student   @relation("StudentSessions", fields: [studentId], references: [id])
 
   // Optional links — a session can belong to an enrollment or be a standalone trial
   enrollmentId String?
@@ -285,7 +322,7 @@ model Enrollment {
   id String @id @default(cuid())
 
   studentId String
-  student   User   @relation("StudentEnrollments", fields: [studentId], references: [id], onDelete: Cascade)
+  student   Student @relation("StudentEnrollments", fields: [studentId], references: [id], onDelete: Cascade)
 
   teacherId String
   teacher   Teacher @relation("TeacherEnrollments", fields: [teacherId], references: [id])
@@ -332,7 +369,7 @@ model Assignment {
   updatedAt    DateTime         @updatedAt
 
   teacher    Teacher               @relation("TeacherAssignments", fields: [teacherId], references: [id])
-  student    User                  @relation("StudentAssignments", fields: [studentId], references: [id])
+  student    Student                  @relation("StudentAssignments", fields: [studentId], references: [id])
   enrollment Enrollment?           @relation(fields: [enrollmentId], references: [id])
   submission AssignmentSubmission?
 
@@ -361,7 +398,7 @@ model AssignmentSubmission {
   gradedAt     DateTime?
 
   assignment Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
-  student    User       @relation(fields: [studentId], references: [id])
+  student    Student       @relation(fields: [studentId], references: [id])
 }
 
 // ─────────────────────────────────────────────────────────
@@ -391,7 +428,7 @@ model ProgressReport {
   updatedAt DateTime  @updatedAt
 
   teacher    Teacher     @relation("TeacherReports", fields: [teacherId], references: [id])
-  student    User        @relation("StudentReports", fields: [studentId], references: [id])
+  student    Student        @relation("StudentReports", fields: [studentId], references: [id])
   enrollment Enrollment? @relation(fields: [enrollmentId], references: [id])
 
   @@index([teacherId])
@@ -414,7 +451,7 @@ model AttendanceRecord {
   updatedAt    DateTime         @updatedAt
 
   teacher    Teacher      @relation("TeacherAttendanceRecords", fields: [teacherId], references: [id])
-  student    User         @relation("StudentAttendance", fields: [studentId], references: [id])
+  student    Student         @relation("StudentAttendance", fields: [studentId], references: [id])
   session    ClassSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   enrollment Enrollment?  @relation(fields: [enrollmentId], references: [id])
 
@@ -440,7 +477,7 @@ model EnrollmentRequest {
   createdAt        DateTime                @default(now())
   updatedAt        DateTime                @updatedAt
 
-  student User @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
 
   @@index([studentId])
   @@map("enrollment_requests")

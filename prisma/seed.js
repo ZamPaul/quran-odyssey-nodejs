@@ -14,7 +14,7 @@ async function main() {
   await prisma.studentProfile.deleteMany();
   await prisma.trialLead.deleteMany();
   await prisma.teacher.deleteMany();
-  await prisma.user.deleteMany();
+  await prisma.user.deleteMany();wszaw
 
   // Seed teachers
   // userId is null for now — linked in Phase 2 when admin creates Clerk accounts
