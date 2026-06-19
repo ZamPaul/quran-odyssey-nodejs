@@ -86,7 +86,7 @@ app.get('/health', (req, res) => {
 // ─── Routes ───────────────────────────────
 app.use('/webhooks', webhookLimiter, webhooksRouter);
 app.use('/api/students', studentsRouter);
-app.use('/api/booking', bookingLimiter, bookingRouter); 
+app.use('/api/booking', bookingRouter); 
 // Add after existing routes
 app.use('/api/leads', leadsRouter);
 app.use('/api/teacher', teacherLimiter, teacherRouter);   // ADD THIS
