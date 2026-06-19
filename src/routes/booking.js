@@ -228,22 +228,6 @@ router.get('/mine', requireAuth, async (req, res) => {
 });
 
 // TEMPORARY — delete after testing
-router.get("/test-whatsapp", requireAuth, async (req, res) => {
-  const { sendTrialBookingWhatsApp } = await import("../services/whatsapp.js");
-
-  // Replace with your actual WhatsApp number
-  const result = await sendTrialBookingWhatsApp({
-    phone: "447911123456",
-    parentName: "Fatimah Ahmed",
-    childName: "Ahmed",
-    teacherName: "Sister Aisha",
-    courseLabel: "Noorani Qaida",
-    dateDisplay: "Wednesday, 28 May 2026",
-    timeDisplay: "6:00 PM – 6:30 PM (BST)",
-  });
-
-  res.json(result);
-});
 
 // ── POST /api/booking/trial ────────────────────────────────
 // Updated: no teacher assignment, universal calendar, admin notification
@@ -388,6 +372,21 @@ router.post('/trial', requireAuth, async (req, res) => {
     const [emailResult] = notifications;
     if (emailResult.status === 'fulfilled' && emailResult.value?.success) {
       prisma.trialBooking.update({ where: { id: booking.id }, data: { emailSent: true } }).catch(() => {});
+    }
+
+    try {
+      await sendAdminTrialNotification({
+        parentName:       learner.account.name || learner.account.email,
+        childName:        learner.name,
+        parentEmail:      learner.account.email,
+        phone:            learner.account.phone || null,
+        courseLabel,
+        genderPreference: cleanGender,
+        dateDisplay:      slot.toDateString(),
+        timeDisplay:      slot.toISOString(),
+      });
+    } catch (adminEmailErr) {
+      console.error('❌ Admin notification failed (booking still confirmed):', adminEmailErr.message);
     }
  
     return res.status(201).json({
