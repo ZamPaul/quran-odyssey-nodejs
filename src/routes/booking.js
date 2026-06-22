@@ -258,6 +258,7 @@ router.post('/trial', requireAuth, async (req, res) => {
   const validGender = ['MALE','FEMALE','NO_PREFERENCE'];
   const cleanGender = validGender.includes(genderPreference) ? genderPreference : 'NO_PREFERENCE';
  
+  
   const slot = new Date(slotStart);
   if (isNaN(slot.getTime()))  return res.status(400).json({ error: 'slotStart must be a valid ISO date' });
   if (slot < new Date())      return res.status(400).json({ error: 'Cannot book a slot in the past' });
@@ -382,6 +383,7 @@ router.post('/trial', requireAuth, async (req, res) => {
         phone:            learner.account.phone || null,
         courseLabel,
         genderPreference: cleanGender,
+        studentTimezone: userTimezone,
         dateDisplay:      slot.toDateString(),
         timeDisplay:      slot.toISOString(),
       });

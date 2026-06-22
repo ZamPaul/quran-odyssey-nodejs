@@ -244,6 +244,7 @@ export async function sendAdminTrialNotification({
   parentEmail,
   phone,
   courseLabel,
+  studentTimezone,
   genderPreference,
   dateDisplay,
   timeDisplay,
@@ -258,6 +259,38 @@ export async function sendAdminTrialNotification({
     console.warn('⚠️  ADMIN_NOTIFICATION_EMAILS not set — skipping admin notification');
     return;
   }
+
+  const start = new Date(timeDisplay);
+  const end   = new Date(start.getTime() + 30 * 60 * 1000);
+
+  const timeStart = start.toLocaleTimeString('en-GB', {
+    timeZone: studentTimezone,
+    hour:     '2-digit',
+    minute:   '2-digit',
+  });
+
+  const timeEnd = end.toLocaleTimeString('en-GB', {
+    timeZone: studentTimezone,
+    hour:     '2-digit',
+    minute:   '2-digit',
+  });
+
+  // Get timezone abbreviation e.g. "BST", "EST"
+  const tzAbbr = start.toLocaleTimeString('en-GB', {
+    timeZone:     studentTimezone,
+    timeZoneName: 'short',
+  }).split(' ').pop();
+
+  const newDateDisplay = start.toLocaleDateString('en-GB', {
+    timeZone: studentTimezone,
+    timeZoneName: "short",
+    weekday:  'long',
+    year:     'numeric',
+    month:    'long',
+    day:      'numeric',
+  });
+
+  const newTimeDisplay = `${timeStart} – ${timeEnd} (${tzAbbr})`;
 
   const genderLabel = {
     MALE:          'Male teacher preferred',
@@ -294,8 +327,8 @@ export async function sendAdminTrialNotification({
           ['Phone / WhatsApp',   phone || '—'],
           ['Course Interest',    courseLabel],
           ['Teacher Preference', genderLabel],
-          ['Requested Date',     dateDisplay],
-          ['Requested Time',     timeDisplay],
+          ['Requested Date',     newDateDisplay],
+          ['Requested Time',     newTimeDisplay],
         ].map(([label, value], i) => `
           <tr>
             <td style="padding:10px 14px;background:${i%2===0?'#f7f9fb':'#ffffff'};border:1px solid #e2e8f0;font-size:12px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.04em;width:36%;">
