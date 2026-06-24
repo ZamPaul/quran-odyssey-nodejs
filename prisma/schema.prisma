@@ -121,11 +121,7 @@ model User {
   // KEPT — existing relations, unchanged. These still point at User
   // because the DB foreign keys still reference `users`. They are
   // removed at the end of Phase 2 when the 8 FKs are flipped to Student.
-  studentProfile        StudentProfile?
   teacher               Teacher?               @relation("TeacherUser")
-  parentProfile         ParentProfile?
-  parentLinks           ParentChildLink[]      @relation("ParentLinks")
-  childLinks            ParentChildLink[]      @relation("ChildLinks")
 
   @@map("users")
 }
@@ -166,27 +162,6 @@ model Student {
 
   @@index([accountId])
   @@map("students")
-}
-
-// ─────────────────────────────────────────────────────────
-// STUDENT PROFILE
-// ─────────────────────────────────────────────────────────
-
-model StudentProfile {
-  id             String         @id @default(cuid())
-  userId         String         @unique
-  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  parentName     String
-  phone          String?
-  childName      String
-  childAge       Int
-  country        String
-  timezone       String
-  courseInterest CourseInterest
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
-
-  @@map("student_profiles")
 }
 
 // ─────────────────────────────────────────────────────────
@@ -481,40 +456,4 @@ model EnrollmentRequest {
 
   @@index([studentId])
   @@map("enrollment_requests")
-}
-
-// ─────────────────────────────────────────────────────────
-// PARENT PROFILE — MODULE 3
-// ─────────────────────────────────────────────────────────
-model ParentProfile {
-  id        String   @id @default(cuid())
-  userId    String   @unique
-  name      String
-  phone     String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@map("parent_profiles")
-}
-
-// ─────────────────────────────────────────────────────────
-// PARENT CHILD LINK — MODULE 3
-// ─────────────────────────────────────────────────────────
-model ParentChildLink {
-  id           String   @id @default(cuid())
-  parentUserId String
-  childUserId  String
-  relationship String   @default("PARENT")
-  isPrimary    Boolean  @default(true)
-  createdAt    DateTime @default(now())
-
-  parent User @relation("ParentLinks", fields: [parentUserId], references: [id], onDelete: Cascade)
-  child  User @relation("ChildLinks",  fields: [childUserId],  references: [id], onDelete: Cascade)
-
-  @@unique([parentUserId, childUserId])
-  @@index([parentUserId])
-  @@index([childUserId])
-  @@map("parent_child_links")
 }
