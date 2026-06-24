@@ -14,6 +14,8 @@ import express from 'express';
 import { prisma } from '../lib/prisma.js';
 import { requireAuth, ownsStudent } from '../middleware/auth.js';
 
+import { deleteStoredFile } from '../lib/storageAdmin.js';
+
 const router = express.Router();
 
 const VALID_COURSES = ['NOORANI_QAIDA','QURAN_RECITATION','TAJWEED','HIFZ','ISLAMIC_STUDIES','ONE_TO_ONE'];
@@ -363,7 +365,7 @@ router.post('/:studentId/assignments/:id/submit', requireAuth, async (req, res) 
     return res.status(404).json({ error: 'Learner not found' });
   }
 
-  const { content, fileUrl, fileName, fileType } = req.body;
+  const { content, fileUrl, fileName, fileType, filePath } = req.body;
 
   if (!content && !fileUrl) {
     return res.status(400).json({ error: 'Provide either content (text) or a file upload' });
@@ -403,6 +405,7 @@ router.post('/:studentId/assignments/:id/submit', requireAuth, async (req, res) 
           fileUrl:  fileUrl?.trim()  || null,
           fileName: fileName?.trim() || null,
           fileType: fileType?.trim() || null,
+          filePath: filePath?.trim() || null,
         },
       }),
       prisma.assignment.update({
@@ -416,6 +419,138 @@ router.post('/:studentId/assignments/:id/submit', requireAuth, async (req, res) 
   } catch (err) {
     console.error('Submission failed:', err);
     return res.status(500).json({ error: 'Failed to submit assignment' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// PATCH /api/students/:studentId/assignments/:id/submission
+// Edit an existing (ungraded) submission: content and/or file.
+// ─────────────────────────────────────────────────────────
+router.patch('/:studentId/assignments/:id/submission', requireAuth, async (req, res) => {
+  const { studentId, id } = req.params;
+  if (!ownsStudent(req, studentId)) {
+    return res.status(404).json({ error: 'Learner not found' });
+  }
+ 
+  const { content, fileUrl, fileName, fileType, filePath, removeFile } = req.body;
+ 
+  // Validate inputs
+  if (content !== undefined && content !== null && content.trim().length > 3000) {
+    return res.status(400).json({ error: 'Content exceeds 3000 character limit' });
+  }
+  if (fileUrl) {
+    try { new URL(fileUrl); } catch {
+      return res.status(400).json({ error: 'fileUrl must be a valid URL' });
+    }
+  }
+ 
+  try {
+    const assignment = await prisma.assignment.findUnique({
+      where:   { id },
+      include: { submission: true },
+    });
+ 
+    // Must exist, belong to THIS learner, and have a submission
+    if (!assignment || assignment.studentId !== studentId) {
+      return res.status(404).json({ error: 'Assignment not found' });
+    }
+    if (!assignment.submission) {
+      return res.status(404).json({ error: 'No submission to edit' });
+    }
+    // Locked once graded
+    if (assignment.submission.gradedAt || assignment.status === 'GRADED') {
+      return res.status(409).json({ error: 'This submission has been graded and can no longer be edited' });
+    }
+ 
+    const existing = assignment.submission;
+ 
+    // Determine the new file state
+    const isReplacingFile = !!fileUrl;                 // a new file was uploaded
+    const isRemovingFile  = removeFile === true && !fileUrl; // explicit remove, no replacement
+ 
+    // Build the update
+    const data = {};
+    if (content !== undefined) data.content = content?.trim() || null;
+ 
+    if (isReplacingFile) {
+      data.fileUrl  = fileUrl.trim();
+      data.fileName = fileName?.trim() || null;
+      data.fileType = fileType?.trim() || null;
+      data.filePath = filePath?.trim() || null;
+    } else if (isRemovingFile) {
+      data.fileUrl = null; data.fileName = null; data.fileType = null; data.filePath = null;
+    }
+ 
+    // Must end up with at least content or a file
+    const willHaveContent = (data.content !== undefined ? data.content : existing.content);
+    const willHaveFile    = isReplacingFile ? true : (isRemovingFile ? false : !!existing.fileUrl);
+    if (!willHaveContent && !willHaveFile) {
+      return res.status(400).json({ error: 'A submission must have either text or a file' });
+    }
+ 
+    // If we replaced or removed the file, delete the OLD file from storage
+    if ((isReplacingFile || isRemovingFile) && existing.fileUrl) {
+      await deleteStoredFile({ path: existing.filePath, url: existing.fileUrl });
+    }
+ 
+    const updated = await prisma.assignmentSubmission.update({
+      where: { assignmentId: id },
+      data,
+    });
+ 
+    console.log(`✅ Submission edited for assignment ${id} (learner ${studentId})`);
+    return res.json({ submission: updated });
+  } catch (err) {
+    console.error('Submission edit failed:', err);
+    return res.status(500).json({ error: 'Failed to edit submission' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// DELETE /api/students/:studentId/assignments/:id/submission
+// Delete an ungraded submission. Removes the file from storage,
+// deletes the submission row, flips the assignment back to PENDING.
+// ─────────────────────────────────────────────────────────
+router.delete('/:studentId/assignments/:id/submission', requireAuth, async (req, res) => {
+  const { studentId, id } = req.params;
+  if (!ownsStudent(req, studentId)) {
+    return res.status(404).json({ error: 'Learner not found' });
+  }
+ 
+  try {
+    const assignment = await prisma.assignment.findUnique({
+      where:   { id },
+      include: { submission: true },
+    });
+ 
+    if (!assignment || assignment.studentId !== studentId) {
+      return res.status(404).json({ error: 'Assignment not found' });
+    }
+    if (!assignment.submission) {
+      return res.status(404).json({ error: 'No submission to delete' });
+    }
+    if (assignment.submission.gradedAt || assignment.status === 'GRADED') {
+      return res.status(409).json({ error: 'This submission has been graded and can no longer be deleted' });
+    }
+ 
+    const sub = assignment.submission;
+ 
+    // Delete the file from storage first (best-effort; won't block the row delete)
+    if (sub.fileUrl) {
+      await deleteStoredFile({ path: sub.filePath, url: sub.fileUrl });
+    }
+ 
+    // Remove the submission row and flip the assignment back to PENDING
+    await prisma.$transaction([
+      prisma.assignmentSubmission.delete({ where: { assignmentId: id } }),
+      prisma.assignment.update({ where: { id }, data: { status: 'PENDING' } }),
+    ]);
+ 
+    console.log(`✅ Submission deleted for assignment ${id} (learner ${studentId}); assignment back to PENDING`);
+    return res.json({ message: 'Submission deleted. You can submit again whenever you are ready.' });
+  } catch (err) {
+    console.error('Submission delete failed:', err);
+    return res.status(500).json({ error: 'Failed to delete submission' });
   }
 });
 

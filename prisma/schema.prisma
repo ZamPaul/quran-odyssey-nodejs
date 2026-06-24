@@ -336,6 +336,7 @@ model Assignment {
   attachmentUrl  String?
   attachmentName String?
   attachmentType String?
+  attachmentPath String?   // ← ADD THIS (Supabase Storage path, for deletion)
 
   dueDate      DateTime
   status       AssignmentStatus @default(PENDING)
@@ -366,6 +367,7 @@ model AssignmentSubmission {
   fileUrl  String?   // Supabase Storage public URL
   fileName String?   // original filename e.g. "my_recitation.mp3"
   fileType String?   // MIME type e.g. "audio/mpeg", "image/png"
+  filePath String?   // ← ADD THIS (Supabase Storage path, for deletion)
   
   grade        String?
   feedback     String?

@@ -4,6 +4,8 @@ import {prisma} from '../lib/prisma.js';
 import { requireTeacher } from '../middleware/teacherAuth.js';
 import { sendProgressReport } from '../services/email.js';
 
+import { deleteStoredFile } from '../lib/storageAdmin.js';
+
 // At the top of teacher.js, add:
 import {
   cleanStr,
@@ -532,7 +534,6 @@ router.get('/students/:id', async (req, res) => {
 // ─────────────────────────────────────────────────────────
 // ASSIGNMENTS
 // ─────────────────────────────────────────────────────────
-
 // GET /api/teacher/assignments
 // All assignments for this teacher
 // Query: ?status= ?studentId= ?courseType=
@@ -698,6 +699,7 @@ router.post('/assignments', writeLimiter, async (req, res) => {
         attachmentUrl:  cleanStr(req.body.attachmentUrl  || '', 2000) || null,
         attachmentName: cleanStr(req.body.attachmentName || '', 500)  || null,
         attachmentType: cleanStr(req.body.attachmentType || '', 100)  || null,
+        attachmentPath: cleanStr(req.body.attachmentPath || '', 1000) || null,
    
         dueDate,
         courseType,
@@ -730,44 +732,41 @@ router.post('/assignments', writeLimiter, async (req, res) => {
 // ─────────────────────────────────────────────────────────
 // router.patch('/assignments/:id', writeLimiter, async (req, res) => {
 //   const { id } = req.params;
-//   const { title, description, dueDate, status } = req.body;
+//   const title       = req.body.title       !== undefined ? cleanStr(req.body.title,       200) : undefined;
+//   const description = req.body.description !== undefined ? cleanStr(req.body.description, 1000) : undefined;
+//   const status      = req.body.status;
+//   let   dueDate;
 
-//   if (!title && !description && !dueDate && !status) {
-//     return res.status(400).json({
-//       error: 'Provide at least one field to update',
-//     });
+//   if (req.body.dueDate !== undefined) {
+//     const result = cleanFutureDate(req.body.dueDate, 'dueDate');
+//     if (result.error) return res.status(400).json({ error: result.error });
+//     dueDate = result.value;
 //   }
 
-//   const validStatuses = ['PENDING', 'OVERDUE'];
+//   if (title === undefined && description === undefined && dueDate === undefined && !status) {
+//     return res.status(400).json({ error: 'Provide at least one field to update' });
+//   }
+
+//   const validStatuses = ['PENDING','OVERDUE'];
 //   if (status && !validStatuses.includes(status)) {
-//     return res.status(400).json({
-//       error: `Teachers can only set status to PENDING or OVERDUE. Got: ${status}`,
-//     });
+//     return res.status(400).json({ error: `Teachers can only set status to PENDING or OVERDUE` });
 //   }
 
 //   try {
-//     const existing = await prisma.assignment.findUnique({ where: { id } });
-
+//     const existing = await prisma.assignment.findUnique({ where:{ id } });
 //     if (!existing || existing.teacherId !== req.teacher.id) {
 //       return res.status(404).json({ error: 'Assignment not found' });
 //     }
 
 //     const updateData = {};
-//     if (title !== undefined)       updateData.title       = title.trim();
-//     if (description !== undefined) updateData.description = description?.trim() || null;
-//     if (status !== undefined)      updateData.status      = status;
-//     if (dueDate !== undefined) {
-//       const due = new Date(dueDate);
-//       if (isNaN(due.getTime())) {
-//         return res.status(400).json({ error: 'Invalid dueDate format' });
-//       }
-//       updateData.dueDate = due;
-//     }
+//     if (title       !== undefined) updateData.title       = title;
+//     if (description !== undefined) updateData.description = description;
+//     if (status      !== undefined) updateData.status      = status;
+//     if (dueDate     !== undefined) updateData.dueDate     = dueDate;
 
 //     const updated = await prisma.assignment.update({
-//       where:   { id },
-//       data:    updateData,
-//       include: { student: { select: { id: true, email: true, studentProfile: { select: { childName: true } } } }, submission: true },
+//       where: { id }, data: updateData,
+//       include: { student:{ select:{ id:true, name:true, account:{ select:{ email:true } } } }, submission:true },
 //     });
 
 //     return res.json({ assignment: updated });
@@ -777,45 +776,90 @@ router.post('/assignments', writeLimiter, async (req, res) => {
 //   }
 // });
 
+// ─────────────────────────────────────────────────────────
+// 1) REPLACE  PATCH /api/teacher/assignments/:id
+//
+// Edits title/description/dueDate/status. Now also:
+//   • Blocks edits once the assignment is GRADED (the task is locked).
+//   • Optionally replaces the teacher attachment, deleting the old file.
+// ─────────────────────────────────────────────────────────
 router.patch('/assignments/:id', writeLimiter, async (req, res) => {
   const { id } = req.params;
-  const title       = req.body.title       !== undefined ? cleanStr(req.body.title,       200) : undefined;
+  const title       = req.body.title       !== undefined ? cleanStr(req.body.title,       200)  : undefined;
   const description = req.body.description !== undefined ? cleanStr(req.body.description, 1000) : undefined;
   const status      = req.body.status;
   let   dueDate;
-
+ 
   if (req.body.dueDate !== undefined) {
     const result = cleanFutureDate(req.body.dueDate, 'dueDate');
     if (result.error) return res.status(400).json({ error: result.error });
     dueDate = result.value;
   }
-
-  if (title === undefined && description === undefined && dueDate === undefined && !status) {
+ 
+  // Optional attachment replacement / removal
+  const attachmentUrl  = req.body.attachmentUrl;   // new file URL (replace)
+  const attachmentName = req.body.attachmentName;
+  const attachmentType = req.body.attachmentType;
+  const attachmentPath = req.body.attachmentPath;
+  const removeAttachment = req.body.removeAttachment === true;
+ 
+  const hasAttachmentChange = attachmentUrl !== undefined || removeAttachment;
+ 
+  if (title === undefined && description === undefined && dueDate === undefined && !status && !hasAttachmentChange) {
     return res.status(400).json({ error: 'Provide at least one field to update' });
   }
-
-  const validStatuses = ['PENDING','OVERDUE'];
+ 
+  const validStatuses = ['PENDING', 'OVERDUE'];
   if (status && !validStatuses.includes(status)) {
-    return res.status(400).json({ error: `Teachers can only set status to PENDING or OVERDUE` });
+    return res.status(400).json({ error: 'Teachers can only set status to PENDING or OVERDUE' });
   }
-
+ 
   try {
-    const existing = await prisma.assignment.findUnique({ where:{ id } });
+    const existing = await prisma.assignment.findUnique({ where: { id } });
     if (!existing || existing.teacherId !== req.teacher.id) {
       return res.status(404).json({ error: 'Assignment not found' });
     }
-
+ 
+    // Locked once graded
+    if (existing.status === 'GRADED') {
+      return res.status(409).json({
+        error: 'This assignment has been graded and is locked. Use "Allow resubmission" first if you need to reopen it.',
+      });
+    }
+ 
     const updateData = {};
     if (title       !== undefined) updateData.title       = title;
     if (description !== undefined) updateData.description = description;
     if (status      !== undefined) updateData.status      = status;
     if (dueDate     !== undefined) updateData.dueDate     = dueDate;
-
+ 
+    // Handle attachment replace / remove
+    if (attachmentUrl !== undefined && attachmentUrl) {
+      // replacing — delete old file if present
+      if (existing.attachmentUrl) {
+        await deleteStoredFile({ path: existing.attachmentPath, url: existing.attachmentUrl });
+      }
+      updateData.attachmentUrl  = cleanStr(attachmentUrl, 2000) || null;
+      updateData.attachmentName = cleanStr(attachmentName || '', 500) || null;
+      updateData.attachmentType = cleanStr(attachmentType || '', 100) || null;
+      updateData.attachmentPath = cleanStr(attachmentPath || '', 1000) || null;
+    } else if (removeAttachment && existing.attachmentUrl) {
+      await deleteStoredFile({ path: existing.attachmentPath, url: existing.attachmentUrl });
+      updateData.attachmentUrl  = null;
+      updateData.attachmentName = null;
+      updateData.attachmentType = null;
+      updateData.attachmentPath = null;
+    }
+ 
     const updated = await prisma.assignment.update({
-      where: { id }, data: updateData,
-      include: { student:{ select:{ id:true, name:true, account:{ select:{ email:true } } } }, submission:true },
+      where:   { id },
+      data:    updateData,
+      include: {
+        student:    { select: { id: true, name: true, account: { select: { email: true } } } },
+        submission: true,
+      },
     });
-
+ 
     return res.json({ assignment: updated });
   } catch (err) {
     console.error('Assignment update failed:', err);
@@ -827,28 +871,76 @@ router.patch('/assignments/:id', writeLimiter, async (req, res) => {
 // DELETE /api/teacher/assignments/:id
 // Delete an assignment (only if not yet submitted)
 // ─────────────────────────────────────────────────────────
+// router.delete('/assignments/:id', async (req, res) => {
+//   const { id } = req.params;
+
+//   try {
+//     const existing = await prisma.assignment.findUnique({
+//       where:   { id },
+//       include: { submission: true },
+//     });
+
+//     if (!existing || existing.teacherId !== req.teacher.id) {
+//       return res.status(404).json({ error: 'Assignment not found' });
+//     }
+
+//     if (existing.submission) {
+//       return res.status(409).json({
+//         error: 'Cannot delete an assignment that has been submitted. Mark it as overdue instead.',
+//       });
+//     }
+
+//     await prisma.assignment.delete({ where: { id } });
+
+//     console.log(`✅ Assignment deleted: ${id}`);
+//     return res.json({ message: 'Assignment deleted successfully' });
+//   } catch (err) {
+//     console.error('Assignment deletion failed:', err);
+//     return res.status(500).json({ error: 'Failed to delete assignment' });
+//   }
+// });
+
+// ─────────────────────────────────────────────────────────
+// 2) REPLACE  DELETE /api/teacher/assignments/:id
+//
+// Default: blocked if a submission exists.
+// ?force=true: deletes the submission (+ its file) AND the assignment
+// (+ its attachment file). The "posted to the wrong student" escape.
+// ─────────────────────────────────────────────────────────
 router.delete('/assignments/:id', async (req, res) => {
   const { id } = req.params;
-
+  const force = req.query.force === 'true';
+ 
   try {
     const existing = await prisma.assignment.findUnique({
       where:   { id },
       include: { submission: true },
     });
-
+ 
     if (!existing || existing.teacherId !== req.teacher.id) {
       return res.status(404).json({ error: 'Assignment not found' });
     }
-
-    if (existing.submission) {
+ 
+    if (existing.submission && !force) {
       return res.status(409).json({
-        error: 'Cannot delete an assignment that has been submitted. Mark it as overdue instead.',
+        error: 'This assignment has a submission. Delete it anyway?',
+        requiresForce: true,   // the UI uses this to show the force-confirm dialog
       });
     }
-
+ 
+    // Delete files from storage (best-effort), then the rows.
+    if (existing.submission?.fileUrl) {
+      await deleteStoredFile({ path: existing.submission.filePath, url: existing.submission.fileUrl });
+    }
+    if (existing.attachmentUrl) {
+      await deleteStoredFile({ path: existing.attachmentPath, url: existing.attachmentUrl });
+    }
+ 
+    // Deleting the assignment cascades to the submission row
+    // (AssignmentSubmission.assignment relation is onDelete: Cascade).
     await prisma.assignment.delete({ where: { id } });
-
-    console.log(`✅ Assignment deleted: ${id}`);
+ 
+    console.log(`✅ Assignment deleted: ${id}${force ? ' (forced, with submission)' : ''}`);
     return res.json({ message: 'Assignment deleted successfully' });
   } catch (err) {
     console.error('Assignment deletion failed:', err);
@@ -861,62 +953,6 @@ router.delete('/assignments/:id', async (req, res) => {
 // Grade a submitted assignment
 // Body: { grade, feedback }
 // ─────────────────────────────────────────────────────────
-// router.post('/assignments/:id/grade', async (req, res) => {
-//   const { id } = req.params;
-//   const { grade, feedback } = req.body;
-
-//   if (!grade) {
-//     return res.status(400).json({ error: 'grade is required' });
-//   }
-
-//   // Grade format: any non-empty string — "Excellent", "8/10", "B+", "MashaAllah"
-//   if (typeof grade !== 'string' || grade.trim().length === 0) {
-//     return res.status(400).json({ error: 'grade must be a non-empty string' });
-//   }
-
-//   try {
-//     const assignment = await prisma.assignment.findUnique({
-//       where:   { id },
-//       include: { submission: true },
-//     });
-
-//     if (!assignment || assignment.teacherId !== req.teacher.id) {
-//       return res.status(404).json({ error: 'Assignment not found' });
-//     }
-
-//     if (!assignment.submission) {
-//       return res.status(409).json({
-//         error: 'Cannot grade an assignment with no submission yet',
-//       });
-//     }
-
-//     // Update submission with grade + feedback, and assignment status to GRADED
-//     const [updatedSubmission] = await prisma.$transaction([
-//       prisma.assignmentSubmission.update({
-//         where: { assignmentId: id },
-//         data: {
-//           grade:    grade.trim(),
-//           feedback: feedback?.trim() || null,
-//           gradedAt: new Date(),
-//         },
-//       }),
-//       prisma.assignment.update({
-//         where: { id },
-//         data:  { status: 'GRADED' },
-//       }),
-//     ]);
-
-//     console.log(`✅ Assignment ${id} graded: ${grade}`);
-//     return res.json({
-//       message:    'Assignment graded successfully',
-//       submission: updatedSubmission,
-//     });
-//   } catch (err) {
-//     console.error('Grading failed:', err);
-//     return res.status(500).json({ error: 'Failed to grade assignment' });
-//   }
-// });
-
 router.post('/assignments/:id/grade', heavyLimiter, async (req, res) => {
   const { id } = req.params;
   const grade    = cleanStr(req.body.grade,    100);
@@ -982,6 +1018,55 @@ router.post('/assignments/bulk-overdue', async (req, res) => {
     return res.status(500).json({ error: 'Failed to update overdue assignments' });
   }
 });
+
+// ─────────────────────────────────────────────────────────
+// 3) ADD  POST /api/teacher/assignments/:id/unlock
+//
+// Resubmission escape hatch (option B): KEEP the student's submission,
+// clear grade/feedback, and flip the assignment back to PENDING so the
+// student can edit it or delete-and-redo. Use when a teacher wants to
+// let the student try again after grading (or after submission).
+// ─────────────────────────────────────────────────────────
+router.post('/assignments/:id/unlock', writeLimiter, async (req, res) => {
+  const { id } = req.params;
+ 
+  try {
+    const assignment = await prisma.assignment.findUnique({
+      where:   { id },
+      include: { submission: true },
+    });
+ 
+    if (!assignment || assignment.teacherId !== req.teacher.id) {
+      return res.status(404).json({ error: 'Assignment not found' });
+    }
+    if (!assignment.submission) {
+      return res.status(409).json({ error: 'There is no submission to reopen. The assignment is already open for submission.' });
+    }
+ 
+    // Clear grade/feedback on the submission, flip the assignment to PENDING.
+    // The submission CONTENT/FILE are preserved (option B).
+    const [submission] = await prisma.$transaction([
+      prisma.assignmentSubmission.update({
+        where: { assignmentId: id },
+        data:  { grade: null, feedback: null, gradedAt: null },
+      }),
+      prisma.assignment.update({
+        where: { id },
+        data:  { status: 'PENDING' },
+      }),
+    ]);
+ 
+    console.log(`✅ Assignment ${id} unlocked for resubmission (submission preserved)`);
+    return res.json({
+      message: 'Assignment reopened. The student can now edit their submission or delete and redo it.',
+      submission,
+    });
+  } catch (err) {
+    console.error('Assignment unlock failed:', err);
+    return res.status(500).json({ error: 'Failed to reopen assignment' });
+  }
+});
+
 
 // ─────────────────────────────────────────────────────────
 // PROGRESS REPORTS
@@ -1066,111 +1151,6 @@ router.get('/reports/:id', async (req, res) => {
 // POST /api/teacher/reports
 // Create a new progress report (starts as DRAFT)
 // ─────────────────────────────────────────────────────────
-// router.post('/reports', async (req, res) => {
-//   const {
-//     studentId,
-//     enrollmentId,
-//     period,
-//     courseType,
-//     overallRating,
-//     tajweedProgress,
-//     recitationNotes,
-//     behaviourNotes,
-//     homeworkNotes,
-//     teacherMessage,
-//     nextSteps,
-//   } = req.body;
-
-//   // Required field validation
-//   const errors = [];
-//   if (!studentId)  errors.push('studentId is required');
-//   if (!period)     errors.push('period is required (e.g. "Week 12")');
-//   if (!courseType) errors.push('courseType is required');
-
-//   if (errors.length > 0) {
-//     return res.status(400).json({ error: 'Validation failed', details: errors });
-//   }
-
-//   // Validate rating range if provided
-//   if (overallRating !== undefined && overallRating !== null) {
-//     const rating = Number(overallRating);
-//     if (isNaN(rating) || rating < 1 || rating > 5) {
-//       return res.status(400).json({
-//         error: 'overallRating must be a number between 1 and 5',
-//       });
-//     }
-//   }
-
-//   try {
-//     // Verify student is enrolled with this teacher
-//     const enrollment = await prisma.enrollment.findFirst({
-//       where: {
-//         teacherId: req.teacher.id,
-//         studentId,
-//         status:    'ACTIVE',
-//       },
-//     });
-
-//     if (!enrollment) {
-//       return res.status(404).json({
-//         error: 'Student not found or not actively enrolled with you',
-//       });
-//     }
-
-//     // Check for duplicate report — same student + period + course
-//     const duplicate = await prisma.progressReport.findFirst({
-//       where: {
-//         teacherId:  req.teacher.id,
-//         studentId,
-//         period:     period.trim(),
-//         courseType,
-//       },
-//     });
-
-//     if (duplicate) {
-//       return res.status(409).json({
-//         error:    `A report for "${period}" already exists for this student`,
-//         reportId: duplicate.id,
-//       });
-//     }
-
-//     const report = await prisma.progressReport.create({
-//       data: {
-//         teacherId:    req.teacher.id,
-//         studentId,
-//         enrollmentId: enrollmentId || enrollment.id,
-//         period:       period.trim(),
-//         courseType,
-//         status:       'DRAFT',
-//         overallRating:   overallRating ? Number(overallRating) : null,
-//         tajweedProgress: tajweedProgress?.trim() || null,
-//         recitationNotes: recitationNotes?.trim() || null,
-//         behaviourNotes:  behaviourNotes?.trim()  || null,
-//         homeworkNotes:   homeworkNotes?.trim()   || null,
-//         teacherMessage:  teacherMessage?.trim()  || null,
-//         nextSteps:       nextSteps?.trim()        || null,
-//       },
-//       include: {
-//         student: {
-//           select: {
-//             id:    true,
-//             email: true,
-//             studentProfile: {
-//               select: { childName: true, parentName: true },
-//             },
-//           },
-//         },
-//       },
-//     });
-
-//     console.log(`✅ Progress report created: ${report.id} — ${period}`);
-//     return res.status(201).json({ report });
-//   } catch (err) {
-//     console.error('Report creation failed:', err);
-//     return res.status(500).json({ error: 'Failed to create report' });
-//   }
-// });
-
 router.post('/reports', writeLimiter, async (req, res) => {
   const errs = [];
   const studentId  = collect(errs, requireStr(req.body.studentId,  'studentId',  50));
