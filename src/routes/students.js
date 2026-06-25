@@ -20,6 +20,8 @@ const router = express.Router();
 
 const VALID_COURSES = ['NOORANI_QAIDA','QURAN_RECITATION','TAJWEED','HIFZ','ISLAMIC_STUDIES','ONE_TO_ONE'];
 
+import { validateDob, resolveAge, ageFromDob } from '../lib/age.js';
+
 // ═════════════════════════════════════════════════════════
 // ACCOUNT + LEARNERS
 // ═════════════════════════════════════════════════════════
@@ -36,6 +38,11 @@ router.get('/', requireAuth, async (req, res) => {
       orderBy: { createdAt: 'asc' },
     });
 
+    const withAge = students.map(s => ({
+      ...s,
+      age: resolveAge(s),   // derived from dateOfBirth when present
+    }));
+
     return res.json({
       account: {
         id:    req.user.id,
@@ -44,7 +51,7 @@ router.get('/', requireAuth, async (req, res) => {
         name:  req.user.name,
         phone: req.user.phone,
       },
-      students,
+      students: withAge,
     });
   } catch (err) {
     console.error('Account/students fetch failed:', err);
@@ -66,7 +73,7 @@ router.get('/', requireAuth, async (req, res) => {
 // ─────────────────────────────────────────────────────────
 router.post('/', requireAuth, async (req, res) => {
   const {
-    name, age, country, timezone, courseInterest, gender, isSelf,
+    name, age, country, timezone, courseInterest, gender, isSelf, dateOfBirth,
     accountName, accountPhone, // optional: set on the User
   } = req.body;
 
@@ -84,10 +91,19 @@ router.post('/', requireAuth, async (req, res) => {
     return res.status(400).json({ error: 'Invalid courseInterest value' });
   }
 
+  // ── Validate dateOfBirth (optional on create) ──
+  const dobResult = validateDob(dateOfBirth);
+  if (!dobResult.ok) {
+    return res.status(400).json({ error: dobResult.error });
+  }
+
   const ageNum = parseInt(age, 10);
+  
   if (isNaN(ageNum) || ageNum < 4 || ageNum > 99) {
     return res.status(400).json({ error: 'Age must be between 4 and 99' });
   }
+
+  const finalAge = dobResult.date ? ageFromDob(dobResult.date) : parseInt(age,10);
 
   try {
     // Optionally backfill account-holder info on first onboarding
@@ -105,9 +121,10 @@ router.post('/', requireAuth, async (req, res) => {
       data: {
         accountId:      req.user.id,
         name:           name.trim(),
-        age:            ageNum,
+        age:            finalAge,
         country:        country.trim(),
         timezone:       timezone.trim(),
+        dateOfBirth: dobResult.date, 
         courseInterest,
         gender:         gender?.trim() || null,
         isSelf:         isSelf === true,
@@ -127,32 +144,85 @@ router.post('/', requireAuth, async (req, res) => {
 // Update one learner. Ownership-checked.
 // Replaces the old PATCH /profile.
 // ─────────────────────────────────────────────────────────
+// router.patch('/:studentId', requireAuth, async (req, res) => {
+//   const { studentId } = req.params;
+
+//   if (!ownsStudent(req, studentId)) {
+//     return res.status(404).json({ error: 'Learner not found' });
+//   }
+
+//   const { name, age, country, timezone, gender } = req.body;
+
+//   const data = {};
+//   if (name     !== undefined) data.name     = name.trim();
+//   if (country  !== undefined) data.country  = country.trim();
+//   if (timezone !== undefined) data.timezone = timezone.trim();
+//   if (gender   !== undefined) data.gender   = gender?.trim() || null;
+//   if (age      !== undefined) {
+//     const ageNum = parseInt(age, 10);
+//     if (isNaN(ageNum) || ageNum < 4 || ageNum > 99) {
+//       return res.status(400).json({ error: 'Age must be between 4 and 99' });
+//     }
+//     data.age = ageNum;
+//   }
+
+//   if (Object.keys(data).length === 0) {
+//     return res.status(400).json({ error: 'No fields provided to update' });
+//   }
+
+//   try {
+//     const student = await prisma.student.update({
+//       where: { id: studentId },
+//       data,
+//     });
+//     return res.json({ student });
+//   } catch (err) {
+//     console.error('Student update failed:', err);
+//     return res.status(500).json({ error: 'Failed to update learner' });
+//   }
+// });
+
+//    Adds dateOfBirth edit + keeps age in sync (option c).
 router.patch('/:studentId', requireAuth, async (req, res) => {
   const { studentId } = req.params;
-
+ 
   if (!ownsStudent(req, studentId)) {
     return res.status(404).json({ error: 'Learner not found' });
   }
-
-  const { name, age, country, timezone, gender } = req.body;
-
+ 
+  const { name, age, country, timezone, gender, dateOfBirth } = req.body;
+ 
   const data = {};
   if (name     !== undefined) data.name     = name.trim();
   if (country  !== undefined) data.country  = country.trim();
   if (timezone !== undefined) data.timezone = timezone.trim();
   if (gender   !== undefined) data.gender   = gender?.trim() || null;
-  if (age      !== undefined) {
+ 
+  // dateOfBirth — validate, and when present, derive age from it (option c)
+  if (dateOfBirth !== undefined) {
+    const dobResult = validateDob(dateOfBirth);
+    if (!dobResult.ok) {
+      return res.status(400).json({ error: dobResult.error });
+    }
+    data.dateOfBirth = dobResult.date;            // may be null (clearing)
+    if (dobResult.date) {
+      data.age = ageFromDob(dobResult.date);      // keep age column in sync
+    }
+  }
+ 
+  // Manual age edit only applies when NOT setting a DOB in the same call
+  if (age !== undefined && data.age === undefined && data.dateOfBirth === undefined) {
     const ageNum = parseInt(age, 10);
-    if (isNaN(ageNum) || ageNum < 4 || ageNum > 99) {
-      return res.status(400).json({ error: 'Age must be between 4 and 99' });
+    if (isNaN(ageNum) || ageNum < 1 || ageNum > 99) {
+      return res.status(400).json({ error: 'Age must be between 1 and 99' });
     }
     data.age = ageNum;
   }
-
+ 
   if (Object.keys(data).length === 0) {
     return res.status(400).json({ error: 'No fields provided to update' });
   }
-
+ 
   try {
     const student = await prisma.student.update({
       where: { id: studentId },
@@ -392,6 +462,7 @@ router.post('/:studentId/assignments/:id/submit', requireAuth, async (req, res) 
     if (assignment.submission) {
       return res.status(409).json({ error: 'Assignment already submitted. Contact your teacher to allow resubmission.' });
     }
+    
     if (assignment.status === 'GRADED') {
       return res.status(409).json({ error: 'Cannot submit a graded assignment' });
     }

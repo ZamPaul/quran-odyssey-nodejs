@@ -5,6 +5,7 @@ import { requireTeacher } from '../middleware/teacherAuth.js';
 import { sendProgressReport } from '../services/email.js';
 
 import { deleteStoredFile } from '../lib/storageAdmin.js';
+import { daysUntilBirthday, turningAge } from '../lib/age.js';
 
 // At the top of teacher.js, add:
 import {
@@ -141,6 +142,7 @@ router.get('/dashboard', async (req, res) => {
       sessionsThisWeek,
       pendingAssignments,
       draftReports,
+      birthdayEnrollments
     ] = await Promise.all([
 
       // Today's sessions — ordered by time
@@ -194,7 +196,42 @@ router.get('/dashboard', async (req, res) => {
       prisma.progressReport.count({
         where: { teacherId, status: 'DRAFT' },
       }),
+
+      // Students enrolled with this teacher — for birthday computation.
+      // We pull distinct students via active enrollments, with their DOB.
+      prisma.enrollment.findMany({
+        where:  { teacherId, status: 'ACTIVE' },
+        select: {
+          student: {
+            select: { id: true, name: true, dateOfBirth: true },
+          },
+        },
+      }),
     ]);
+
+    const BIRTHDAY_WINDOW_DAYS = 30;
+
+    // Dedupe students (a student could appear in multiple enrollments)
+    const seen = new Set();
+    const upcomingBirthdays = [];
+    for (const row of birthdayEnrollments) {
+      const s = row.student;
+      if (!s || !s.dateOfBirth || seen.has(s.id)) continue;
+      seen.add(s.id);
+  
+      const days = daysUntilBirthday(s.dateOfBirth);
+      if (days != null && days <= BIRTHDAY_WINDOW_DAYS) {
+        upcomingBirthdays.push({
+          id:        s.id,
+          name:      s.name,
+          days,                          // 0 = today
+          turning:   turningAge(s.dateOfBirth),
+          date:      s.dateOfBirth,
+        });
+      }
+    }
+    // Soonest first
+    upcomingBirthdays.sort((a, b) => a.days - b.days);
 
     // Unique student count from enrollments
     const totalStudents = new Set(enrollments.map(e => e.studentId)).size;
@@ -202,6 +239,7 @@ router.get('/dashboard', async (req, res) => {
     return res.json({
       todaySessions,
       upcomingSessions,
+      upcomingBirthdays,
       stats: {
         totalStudents,
         sessionsThisWeek,

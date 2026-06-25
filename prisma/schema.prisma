@@ -136,6 +136,7 @@ model Student {
   // Learner details (will be backfilled from StudentProfile in Phase 2)
   name           String
   age            Int
+  dateOfBirth    DateTime?   
   country        String
   timezone       String
   gender         String?         // for teacher matching; optional
