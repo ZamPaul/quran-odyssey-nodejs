@@ -98,6 +98,11 @@ enum EnrollmentRequestStatus {
   CANCELLED
 }
 
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+}
+
 // ─────────────────────────────────────────────────────────
 // USER
 // ─────────────────────────────────────────────────────────
@@ -114,6 +119,7 @@ model User {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  status    UserStatus @default(ACTIVE)   // ← NEW (soft-suspend)
 
   // NEW — the learners this account owns/manages
   managedStudents Student[] @relation("AccountStudents")
@@ -121,9 +127,35 @@ model User {
   // KEPT — existing relations, unchanged. These still point at User
   // because the DB foreign keys still reference `users`. They are
   // removed at the end of Phase 2 when the 8 FKs are flipped to Student.
-  teacher               Teacher?               @relation("TeacherUser")
+  teacher   Teacher? @relation("TeacherUser")
+  auditLogs AuditLog[] @relation("AuditActor")
 
   @@map("users")
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+
+  // Who did it (nullable so history survives admin deletion)
+  actorId     String?
+  actor       User?    @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  actorEmail  String?  // denormalised snapshot
+
+  // What happened
+  action      String   // e.g. "account.suspend", "student.delete"
+  targetType  String?  // e.g. "User", "Student", "Enrollment"
+  targetId    String?
+  targetLabel String?  // human snapshot e.g. student name/email
+
+  metadata    Json?    // before/after or extra context
+  ip          String?
+
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([actorId])
+  @@index([targetType, targetId])
+  @@index([action])
 }
 
 model Student {
