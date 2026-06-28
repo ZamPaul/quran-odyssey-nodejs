@@ -154,6 +154,7 @@ export async function createBookingEvent({
     return event.data.id;
   } catch (err) {
     console.error('Failed to create calendar event:', err.message);
+    console.log("error log in creating booking event:", err)
     throw new Error('Failed to create booking event on calendar');
   }
 }
