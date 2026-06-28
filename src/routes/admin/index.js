@@ -14,6 +14,7 @@ import { prisma } from "../../lib/prisma.js";
 import dashboardRouter from './dashboard.js';
 import accountsRouter from './accounts.js';
 import studentsRouter from './students.js';
+import teachersRouter from './teachers.js';
 
 const router = express.Router();
 
@@ -48,6 +49,7 @@ router.get("/ping", (req, res) => {
 router.use('/dashboard', dashboardRouter);
 router.use('/accounts', accountsRouter);
 router.use('/students', studentsRouter);
+router.use('/teachers', teachersRouter);
 
 // Future sub-routers (added in later phases), e.g.:
 //   import accountsRouter from './accounts.js';
