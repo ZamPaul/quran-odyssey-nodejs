@@ -15,6 +15,13 @@ import { logAudit } from "../../lib/audit.js";
 import { createBookingEvent, deleteBookingEvent } from "../../services/googleCalendar.js";
 import { sendEnrollmentApproved } from "../../services/email.js";
 
+import {
+  assertNoDuplicateEnrollment,
+  isDuplicateEnrollmentDbError,
+  duplicateEnrollmentMessage,
+  DuplicateEnrollmentError,
+} from "../../lib/enrollmentGuard.js";
+
 const router = express.Router();
 
 const COURSE_LABELS = { NOORANI_QAIDA: "Noorani Qaida", QURAN_RECITATION: "Quran Recitation", TAJWEED: "Tajweed", HIFZ: "Hifz", ISLAMIC_STUDIES: "Islamic Studies", ONE_TO_ONE: "One-to-One" };
@@ -197,15 +204,47 @@ router.post("/:id/convert", async (req, res) => {
     if (!trial) return res.status(404).json({ error: "Trial not found" });
     if (!trial.teacherId) return res.status(400).json({ error: "Assign a teacher before converting" });
 
-    const enrollment = await prisma.enrollment.create({
-      data: {
-        studentId: trial.student.id, teacherId: trial.teacherId,
-        courseType: courseType || trial.courseInterest,
-        sessionsPerWeek: sessionsPerWeek ? parseInt(sessionsPerWeek, 10) : 2,
-        startDate: startDate ? new Date(startDate) : new Date(),
-        status: "ACTIVE", notes: notes?.trim() || null,
-      },
-    });
+    const effectiveCourse = courseType || trial.courseInterest;
+    try {
+      await assertNoDuplicateEnrollment({
+        studentId: trial.student.id,
+        courseType: effectiveCourse,
+        teacherId: trial.teacherId,
+      });
+    } catch (e) {
+      if (e instanceof DuplicateEnrollmentError) {
+        return res.status(409).json({ error: e.message });
+      }
+      throw e;
+    }
+
+    let enrollment;
+    try {
+      enrollment = await prisma.enrollment.create({
+        data: {
+          studentId: trial.student.id, teacherId: trial.teacherId,
+          courseType: effectiveCourse,
+          sessionsPerWeek: sessionsPerWeek ? parseInt(sessionsPerWeek, 10) : 2,
+          startDate: startDate ? new Date(startDate) : new Date(),
+          status: "ACTIVE", notes: notes?.trim() || null,
+        },
+      });
+    } catch (e) {
+      if (isDuplicateEnrollmentDbError(e)) {
+        return res.status(409).json({ error: duplicateEnrollmentMessage() });
+      }
+      throw e;
+    }
+
+    // const enrollment = await prisma.enrollment.create({
+    //   data: {
+    //     studentId: trial.student.id, teacherId: trial.teacherId,
+    //     courseType: courseType || trial.courseInterest,
+    //     sessionsPerWeek: sessionsPerWeek ? parseInt(sessionsPerWeek, 10) : 2,
+    //     startDate: startDate ? new Date(startDate) : new Date(),
+    //     status: "ACTIVE", notes: notes?.trim() || null,
+    //   },
+    // });
 
     // Mark the trial completed
     await prisma.trialBooking.update({ where: { id }, data: { status: "COMPLETED" } });

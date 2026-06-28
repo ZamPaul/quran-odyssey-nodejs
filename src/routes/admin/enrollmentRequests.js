@@ -16,6 +16,13 @@ import { prisma } from "../../lib/prisma.js";
 import { logAudit } from "../../lib/audit.js";
 import { sendEnrollmentApproved, sendEnrollmentRejected } from "../../services/email.js";
 
+import {
+  assertNoDuplicateEnrollment,
+  isDuplicateEnrollmentDbError,
+  duplicateEnrollmentMessage,
+  DuplicateEnrollmentError,
+} from "../../lib/enrollmentGuard.js";
+
 const router = express.Router();
 
 const VALID_STATUSES = ["PENDING", "UNDER_REVIEW", "APPROVED", "AWAITING_PAYMENT", "ACTIVE", "REJECTED", "CANCELLED"];
@@ -156,18 +163,51 @@ router.post("/:id/convert", async (req, res) => {
     const teacher = await prisma.teacher.findUnique({ where: { id: teacherId } });
     if (!teacher) return res.status(404).json({ error: "Teacher not found" });
 
+    try {
+      await assertNoDuplicateEnrollment({
+        studentId: request.student.id,
+        courseType: request.courseType,
+        teacherId,
+      });
+    } catch (e) {
+      if (e instanceof DuplicateEnrollmentError) {
+        return res.status(409).json({ error: e.message });
+      }
+      throw e;
+    }
+
+    let enrollment;
+    try {
+      [enrollment] = await prisma.$transaction([
+        prisma.enrollment.create({
+          data: {
+            studentId: request.student.id, teacherId, courseType: request.courseType,
+            sessionsPerWeek: sessionsPerWeek ? parseInt(sessionsPerWeek, 10) : 2,
+            startDate: startDate ? new Date(startDate) : new Date(),
+            status: "ACTIVE", notes: notes?.trim() || null,
+          },
+        }),
+        prisma.enrollmentRequest.update({ where: { id }, data: { status: "ACTIVE" } }),
+      ]);
+    } catch (e) {
+      if (isDuplicateEnrollmentDbError(e)) {
+        return res.status(409).json({ error: duplicateEnrollmentMessage() });
+      }
+      throw e;
+    }
+
     // Create the enrollment + flip the request to ACTIVE in a transaction
-    const [enrollment] = await prisma.$transaction([
-      prisma.enrollment.create({
-        data: {
-          studentId: request.student.id, teacherId, courseType: request.courseType,
-          sessionsPerWeek: sessionsPerWeek ? parseInt(sessionsPerWeek, 10) : 2,
-          startDate: startDate ? new Date(startDate) : new Date(),
-          status: "ACTIVE", notes: notes?.trim() || null,
-        },
-      }),
-      prisma.enrollmentRequest.update({ where: { id }, data: { status: "ACTIVE" } }),
-    ]);
+    // const [enrollment] = await prisma.$transaction([
+    //   prisma.enrollment.create({
+    //     data: {
+    //       studentId: request.student.id, teacherId, courseType: request.courseType,
+    //       sessionsPerWeek: sessionsPerWeek ? parseInt(sessionsPerWeek, 10) : 2,
+    //       startDate: startDate ? new Date(startDate) : new Date(),
+    //       status: "ACTIVE", notes: notes?.trim() || null,
+    //     },
+    //   }),
+    //   prisma.enrollmentRequest.update({ where: { id }, data: { status: "ACTIVE" } }),
+    // ]);
 
     await logAudit(req, {
       action: "enrollmentRequest.convert", targetType: "Enrollment", targetId: enrollment.id,

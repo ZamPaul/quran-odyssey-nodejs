@@ -13,6 +13,13 @@ import { prisma } from "../../lib/prisma.js";
 import { logAudit } from "../../lib/audit.js";
 import { sendEnrollmentApproved } from "../../services/email.js";
 
+import {
+  assertNoDuplicateEnrollment,
+  isDuplicateEnrollmentDbError,
+  duplicateEnrollmentMessage,
+  DuplicateEnrollmentError,
+} from "../../lib/enrollmentGuard.js";
+
 const router = express.Router();
 
 const VALID_COURSES = [
@@ -420,17 +427,44 @@ router.post("/:id/enroll", async (req, res) => {
     if (!student) return res.status(404).json({ error: "Student not found" });
     if (!teacher) return res.status(404).json({ error: "Teacher not found" });
 
-    const enrollment = await prisma.enrollment.create({
-      data: {
-        studentId: id,
-        teacherId,
-        courseType,
-        sessionsPerWeek: sessionsPerWeek ? parseInt(sessionsPerWeek, 10) : 2,
-        startDate: startDate ? new Date(startDate) : new Date(),
-        status: "ACTIVE",
-        notes: notes?.trim() || null,
-      },
-    });
+    // Block duplicate active/paused enrolment (same student+course+teacher)
+    try {
+      await assertNoDuplicateEnrollment({ studentId: id, courseType, teacherId });
+    } catch (e) {
+      if (e instanceof DuplicateEnrollmentError) {
+        return res.status(409).json({ error: e.message });
+      }
+      throw e;
+    }
+
+    let enrollment;
+    try {
+      enrollment = await prisma.enrollment.create({
+        data: {
+          studentId: id, teacherId, courseType,
+          sessionsPerWeek: sessionsPerWeek ? parseInt(sessionsPerWeek, 10) : 2,
+          startDate: startDate ? new Date(startDate) : new Date(),
+          status: "ACTIVE", notes: notes?.trim() || null,
+        },
+      });
+    } catch (e) {
+      if (isDuplicateEnrollmentDbError(e)) {
+        return res.status(409).json({ error: duplicateEnrollmentMessage() });
+      }
+      throw e;
+    }
+
+    // const enrollment = await prisma.enrollment.create({
+    //   data: {
+    //     studentId: id,
+    //     teacherId,
+    //     courseType,
+    //     sessionsPerWeek: sessionsPerWeek ? parseInt(sessionsPerWeek, 10) : 2,
+    //     startDate: startDate ? new Date(startDate) : new Date(),
+    //     status: "ACTIVE",
+    //     notes: notes?.trim() || null,
+    //   },
+    // });
 
     await logAudit(req, {
       action: "student.enroll",
