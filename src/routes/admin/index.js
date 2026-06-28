@@ -13,6 +13,7 @@ import { requireAdmin } from "../../middleware/adminAuth.js";
 import { prisma } from "../../lib/prisma.js";
 import dashboardRouter from './dashboard.js';
 import accountsRouter from './accounts.js';
+import studentsRouter from './students.js';
 
 const router = express.Router();
 
@@ -46,6 +47,7 @@ router.get("/ping", (req, res) => {
 
 router.use('/dashboard', dashboardRouter);
 router.use('/accounts', accountsRouter);
+router.use('/students', studentsRouter);
 
 // Future sub-routers (added in later phases), e.g.:
 //   import accountsRouter from './accounts.js';
