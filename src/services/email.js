@@ -794,8 +794,8 @@ export async function sendEnrollmentAdminNotification({
       <div style="background:#fff8e7;border-radius:10px;padding:16px 18px;border-left:4px solid #faa71a;">
         <div style="font-size:13px;font-weight:700;color:#92400e;margin-bottom:4px;">Next Step</div>
         <div style="font-size:13px;color:#92400e;line-height:1.6;">
-          Review this application in Supabase → <strong>enrollment_requests</strong> table.<br/>
-          Update <strong>status</strong> to <strong>APPROVED</strong> or <strong>REJECTED</strong> via the admin API endpoint.<br/>
+          Review this application in the Admin Panel's → <strong>Enrollment Requests</strong> tab.<br/>
+          Update <strong>status</strong> to <strong>APPROVED</strong> or <strong>REJECTED</strong><br/>
           The student will receive an automated email notification.
         </div>
       </div>

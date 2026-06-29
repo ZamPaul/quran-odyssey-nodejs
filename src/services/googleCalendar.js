@@ -118,6 +118,7 @@ export async function createBookingEvent({
   parentName,
   courseInterest,
   studentEmail,
+  // summary = "",
 }) {
   const auth     = getAuth();
   const calendar = google.calendar({ version: 'v3', auth });

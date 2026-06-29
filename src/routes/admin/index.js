@@ -17,6 +17,7 @@ import studentsRouter from './students.js';
 import teachersRouter from './teachers.js';
 import requestsRouter from './enrollmentRequests.js';
 import trialsRouter from './trials.js';
+import sessionsRouter from './sessions.js';
     
 
 const router = express.Router();
@@ -55,6 +56,7 @@ router.use('/students', studentsRouter);
 router.use('/teachers', teachersRouter);
 router.use('/enrollment-requests', requestsRouter);
 router.use('/trials', trialsRouter);
+router.use('/sessions', sessionsRouter);
 
 // Future sub-routers (added in later phases), e.g.:
 //   import accountsRouter from './accounts.js';
