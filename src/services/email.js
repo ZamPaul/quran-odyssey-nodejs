@@ -559,6 +559,9 @@ export async function sendProgressReport({
   recitationNotes,
   behaviourNotes,
   homeworkNotes,
+  attachmentUrl,        // ← NEW
+  attachmentName,       // ← NEW
+  isResend = false,     // ← NEW
   teacherMessage,
   nextSteps,
 }) {
@@ -664,13 +667,21 @@ export async function sendProgressReport({
         Here is ${childName}'s progress report for <strong>${period}</strong>, prepared by <strong>${teacherName}</strong>.
       </p>
 
+      ${isResend ? `
+        <div style="background:#fff7e0;border:1px solid rgba(245,158,11,0.3);border-radius:8px;padding:12px 16px;margin-bottom:20px;">
+          <div style="font-size:13px;color:#92400e;font-weight:600;">
+            📝 This is an updated version of ${childName}'s ${period} report.
+          </div>
+        </div>
+      ` : ''}
+
       <!-- Overall rating -->
-      <div style="background: #f7f9fb; border-radius: 10px; padding: 18px 20px; margin-bottom: 28px; display: flex; align-items: center; justify-content: space-between;">
+      <div style="background: #f7f9fb; border-radius: 10px; padding: 18px 20px; margin-bottom: 28px; display: flex; alignItems: center; justifyContent: space-between;">
         <div>
           <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #94a3b8; margin-bottom: 4px;">Overall Rating</div>
-          <div style="font-size: 22px;">${ratingStr}</div>
+          <div style="font-size: 18px; text-align:bottom">${ratingStr}</div>
         </div>
-        <div style="text-align: right;">
+        <div style="text-align: right; margin-left: 70px;">
           <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #94a3b8; margin-bottom: 4px;">Student</div>
           <div style="font-size: 14px; font-weight: 700; color: #0f172a;">${childName}</div>
         </div>
@@ -697,6 +708,19 @@ export async function sendProgressReport({
         </div>
       ` : ''}
 
+      ${attachmentUrl ? `
+        <div style="margin-bottom:28px;">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:#94a3b8;margin-bottom:10px;">
+            Attachment
+          </div>
+          <a href="${attachmentUrl}" target="_blank"
+              style="display:inline-block;background:#28b7d9;color:#ffffff;text-decoration:none;
+                    font-size:14px;font-weight:700;padding:12px 22px;border-radius:8px;">
+            📎 View ${attachmentName || 'attached file'}
+          </a>
+        </div>
+      ` : ''}
+
       <!-- Footer note -->
       <p style="font-size: 13px; color: #94a3b8; line-height: 1.6; border-top: 1px solid #e2e8f0; padding-top: 20px; margin: 0;">
         This report was sent from Quran Odyssey on behalf of ${teacherName}. 
@@ -706,7 +730,7 @@ export async function sendProgressReport({
 
     <!-- Footer -->
     <div style="text-align: center; padding: 20px 0; font-size: 12px; color: #94a3b8;">
-      © 2026 Quran Odyssey · Built by VISAITECH
+      © 2026 Quran Odyssey
     </div>
   </div>
 

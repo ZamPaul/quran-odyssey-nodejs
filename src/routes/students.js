@@ -13,8 +13,10 @@
 import express from 'express';
 import { prisma } from '../lib/prisma.js';
 import { requireAuth, ownsStudent } from '../middleware/auth.js';
+import { isAccountComplete, hasContactDetails } from '../lib/accountCompleteness.js';
 
 import { deleteStoredFile } from '../lib/storageAdmin.js';
+import { streamReportPdf } from '../lib/reportPdf.js';
 
 const router = express.Router();
 
@@ -43,6 +45,8 @@ router.get('/', requireAuth, async (req, res) => {
       age: resolveAge(s),   // derived from dateOfBirth when present
     }));
 
+    const complete = isAccountComplete(req.user, students.length);
+
     return res.json({
       account: {
         id:    req.user.id,
@@ -52,6 +56,13 @@ router.get('/', requireAuth, async (req, res) => {
         phone: req.user.phone,
       },
       students: withAge,
+      accountComplete: complete,                 // ← NEW: the single authority
+      hasContactDetails: hasContactDetails(req.user), // ← NEW: name+phone only
+      profileMissing: [                          // ← NEW: what's missing (for UX)
+        ...(!req.user.name?.trim()  ? ['name']  : []),
+        ...(!req.user.phone?.trim() ? ['phone'] : []),
+        ...(students.length === 0   ? ['learner'] : []),
+      ],
     });
   } catch (err) {
     console.error('Account/students fetch failed:', err);
@@ -78,11 +89,11 @@ router.post('/', requireAuth, async (req, res) => {
   } = req.body;
 
   const missing = [];
-  if (!name)           missing.push('name');
+  if (!name)             missing.push('name');
   if (age === undefined) missing.push('age');
-  if (!country)        missing.push('country');
-  if (!timezone)       missing.push('timezone');
-  if (!courseInterest) missing.push('courseInterest');
+  if (!country)          missing.push('country');
+  if (!timezone)         missing.push('timezone');
+  if (!courseInterest)   missing.push('courseInterest');
   if (missing.length) {
     return res.status(400).json({ error: `Missing required fields: ${missing.join(', ')}` });
   }
@@ -97,16 +108,25 @@ router.post('/', requireAuth, async (req, res) => {
     return res.status(400).json({ error: dobResult.error });
   }
 
-  const ageNum = parseInt(age, 10);
-  
-  if (isNaN(ageNum) || ageNum < 4 || ageNum > 99) {
+  // Final age = derived from DOB when present, else the manual value.
+  // Validate the FINAL age so the bound applies either way (no DOB bypass).
+  const finalAge = dobResult.date ? ageFromDob(dobResult.date) : parseInt(age, 10);
+  if (isNaN(finalAge) || finalAge < 4 || finalAge > 99) {
     return res.status(400).json({ error: 'Age must be between 4 and 99' });
   }
 
-  const finalAge = dobResult.date ? ageFromDob(dobResult.date) : parseInt(age,10);
-
   try {
-    // Optionally backfill account-holder info on first onboarding
+    // ── First-time onboarding: account holder must have name + phone ──
+    // (renamed to acctName/acctPhone to avoid shadowing the learner's `name`)
+    const isFirstOnboarding = !req.user.name || !req.user.phone;
+    if (isFirstOnboarding) {
+      const acctName  = (accountName  || req.user.name  || '').trim();
+      const acctPhone = (accountPhone || req.user.phone || '').trim();
+      if (!acctName)  return res.status(400).json({ error: 'Your name is required.' });
+      if (!acctPhone) return res.status(400).json({ error: 'Your contact number is required.' });
+    }
+
+    // Backfill account-holder info on first onboarding (never overwrite existing)
     if (accountName || accountPhone) {
       await prisma.user.update({
         where: { id: req.user.id },
@@ -124,7 +144,7 @@ router.post('/', requireAuth, async (req, res) => {
         age:            finalAge,
         country:        country.trim(),
         timezone:       timezone.trim(),
-        dateOfBirth: dobResult.date, 
+        dateOfBirth:    dobResult.date,
         courseInterest,
         gender:         gender?.trim() || null,
         isSelf:         isSelf === true,
@@ -232,6 +252,24 @@ router.patch('/:studentId', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('Student update failed:', err);
     return res.status(500).json({ error: 'Failed to update learner' });
+  }
+});
+
+router.get('/:studentId/reports/:id/pdf', requireAuth, async (req, res) => {
+  const { studentId, id } = req.params;
+  if (!ownsStudent(req, studentId)) return res.status(404).json({ error: 'Learner not found' });
+  try {
+    const report = await prisma.progressReport.findUnique({
+      where: { id },
+      include: { student: { select: { name: true } }, teacher: { select: { name: true } } },
+    });
+    if (!report || report.studentId !== studentId || report.status !== 'SENT') {
+      return res.status(404).json({ error: 'Report not found' });
+    }
+    streamReportPdf(res, { report, teacherName: report.teacher?.name || 'Teacher', childName: report.student.name });
+  } catch (err) {
+    console.error('Parent report PDF failed:', err);
+    return res.status(500).json({ error: 'Failed to generate PDF' });
   }
 });
 

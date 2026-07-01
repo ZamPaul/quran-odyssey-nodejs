@@ -433,6 +433,14 @@ model ProgressReport {
   teacherMessage  String? // personal message to parent
   nextSteps       String?
 
+  attachmentUrl  String?
+  attachmentName String?
+  attachmentType String?
+  attachmentPath String?   // Supabase Storage path, for deletion
+
+  updatedSinceSent Boolean   @default(false)  // edited after being SENT
+  lastSentAt       DateTime?                  // most recent (re)send time
+
   sentAt    DateTime?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt

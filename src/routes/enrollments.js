@@ -16,7 +16,7 @@
 
 import express from "express";
 import { prisma } from "../lib/prisma.js";
-import { requireAuth, ownsStudent } from "../middleware/auth.js";
+import { requireAuth, ownsStudent, requireContactDetails } from "../middleware/auth.js";
 import {
   sendEnrollmentAdminNotification,
   sendEnrollmentApproved,
@@ -50,7 +50,7 @@ const COURSE_LABELS = {
 //   - That learner cannot have >1 active application
 //   - That learner cannot already be ACTIVE in this course
 // ─────────────────────────────────────────────────────────
-router.post("/apply", requireAuth, async (req, res) => {
+router.post("/apply", requireAuth, requireContactDetails, async (req, res) => {
   const {
     studentId,
     courseType,

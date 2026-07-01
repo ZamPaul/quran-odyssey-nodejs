@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import 'dotenv/config';
 
-const BUCKET = 'assignments';
+const DEFAULT_BUCKET  = 'assignments';
  
 // Service-role client — SERVER ONLY. Never import this in frontend code.
 const supabaseAdmin = createClient(
@@ -11,9 +11,9 @@ const supabaseAdmin = createClient(
 );
  
 // Derive a storage path from a Supabase public URL (fallback for old rows).
-export function pathFromPublicUrl(url) {
+export function pathFromPublicUrl(url, bucket = DEFAULT_BUCKET) {
   if (!url) return null;
-  const marker = `/object/public/${BUCKET}/`;
+  const marker = `/object/public/${bucket}/`;
   const idx = url.indexOf(marker);
   if (idx === -1) return null;
   return decodeURIComponent(url.slice(idx + marker.length));
@@ -22,12 +22,12 @@ export function pathFromPublicUrl(url) {
 // Delete a single stored file. Prefers an explicit path; falls back to URL.
 // Never throws — returns a result object so callers can proceed even if the
 // storage delete fails (we don't want a stuck file to block a DB operation).
-export async function deleteStoredFile({ path, url } = {}) {
-  const target = path || pathFromPublicUrl(url);
+export async function deleteStoredFile({ path, url, bucket = DEFAULT_BUCKET } = {}) {
+  const target = path || pathFromPublicUrl(url, bucket);
   if (!target) return { success: false, error: 'No path or resolvable URL' };
  
   try {
-    const { error } = await supabaseAdmin.storage.from(BUCKET).remove([target]);
+    const { error } = await supabaseAdmin.storage.from(bucket).remove([target]);
     if (error) {
       console.error('⚠️  Storage delete failed:', error.message);
       return { success: false, error: error.message };

@@ -10,6 +10,8 @@ import {
 import { sendAdminTrialNotification, sendTrialBookingConfirmation } from "../services/email.js";
 import { sendTrialBookingWhatsApp } from "../services/whatsapp.js";
 import { ownsStudent } from "../middleware/auth.js";
+import { requireContactDetails } from '../middleware/auth.js'; 
+
 
 const router = express.Router();
 
@@ -232,7 +234,7 @@ router.get('/mine', requireAuth, async (req, res) => {
 // ── POST /api/booking/trial ────────────────────────────────
 // Updated: no teacher assignment, universal calendar, admin notification
 
-router.post('/trial', requireAuth, async (req, res) => {
+router.post('/trial', requireAuth, requireContactDetails, async (req, res) => {
   const {
     studentId,                 // optional — if omitted, we create a learner inline
     slotStart,

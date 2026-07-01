@@ -3,6 +3,7 @@ import "dotenv/config";
 import { createClerkClient } from "@clerk/backend";
 import { verifyToken } from "@clerk/backend";
 import { prisma } from "../lib/prisma.js";
+import { hasContactDetails } from "../lib/accountCompleteness.js";
 
 const clerk = createClerkClient({
   secretKey: process.env.CLERK_SECRET_KEY,
@@ -62,4 +63,23 @@ export const requireAuth = async (req, res, next) => {
 // ─────────────────────────────────────────────────────────
 export function ownsStudent(req, studentId) {
   return Array.isArray(req.studentIds) && req.studentIds.includes(studentId);
+}
+ 
+export function requireContactDetails(req, res, next) {
+  if (!req.user) {
+    return res.status(401).json({ error: "Not authenticated" });
+  }
+  if (!hasContactDetails(req.user)) {
+    return res.status(428).json({
+      // 428 Precondition Required — semantically perfect here.
+      error: "PROFILE_INCOMPLETE",
+      message: "Please complete your profile (name and contact number) before booking or enrolling.",
+      missing: [
+        ...(!req.user.name?.trim()  ? ["name"]  : []),
+        ...(!req.user.phone?.trim() ? ["phone"] : []),
+      ],
+      redirectTo: "/register-profile",
+    });
+  }
+  next();
 }

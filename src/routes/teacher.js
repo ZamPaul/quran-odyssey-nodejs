@@ -23,6 +23,8 @@ import {
   heavyLimiter,
 } from '../middleware/rateLimiter.js';
 
+import { streamReportPdf } from '../lib/reportPdf.js';
+
 const router = express.Router();
 
 // Apply requireTeacher to ALL routes in this file
@@ -906,39 +908,6 @@ router.patch('/assignments/:id', writeLimiter, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────
-// DELETE /api/teacher/assignments/:id
-// Delete an assignment (only if not yet submitted)
-// ─────────────────────────────────────────────────────────
-// router.delete('/assignments/:id', async (req, res) => {
-//   const { id } = req.params;
-
-//   try {
-//     const existing = await prisma.assignment.findUnique({
-//       where:   { id },
-//       include: { submission: true },
-//     });
-
-//     if (!existing || existing.teacherId !== req.teacher.id) {
-//       return res.status(404).json({ error: 'Assignment not found' });
-//     }
-
-//     if (existing.submission) {
-//       return res.status(409).json({
-//         error: 'Cannot delete an assignment that has been submitted. Mark it as overdue instead.',
-//       });
-//     }
-
-//     await prisma.assignment.delete({ where: { id } });
-
-//     console.log(`✅ Assignment deleted: ${id}`);
-//     return res.json({ message: 'Assignment deleted successfully' });
-//   } catch (err) {
-//     console.error('Assignment deletion failed:', err);
-//     return res.status(500).json({ error: 'Failed to delete assignment' });
-//   }
-// });
-
-// ─────────────────────────────────────────────────────────
 // 2) REPLACE  DELETE /api/teacher/assignments/:id
 //
 // Default: blocked if a submission exists.
@@ -1105,7 +1074,6 @@ router.post('/assignments/:id/unlock', writeLimiter, async (req, res) => {
   }
 });
 
-
 // ─────────────────────────────────────────────────────────
 // PROGRESS REPORTS
 // ─────────────────────────────────────────────────────────
@@ -1184,6 +1152,23 @@ router.get('/reports/:id', async (req, res) => {
     return res.status(500).json({ error: 'Failed to fetch report' });
   }
 });
+ 
+router.get('/reports/:id/pdf', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const report = await prisma.progressReport.findUnique({
+      where: { id },
+      include: { student: { select: { name: true } } },
+    });
+    if (!report || report.teacherId !== req.teacher.id) {
+      return res.status(404).json({ error: 'Report not found' });
+    }
+    streamReportPdf(res, { report, teacherName: req.teacher.name, childName: report.student.name });
+  } catch (err) {
+    console.error('Report PDF failed:', err);
+    return res.status(500).json({ error: 'Failed to generate PDF' });
+  }
+});
 
 // ─────────────────────────────────────────────────────────
 // POST /api/teacher/reports
@@ -1207,6 +1192,11 @@ router.post('/reports', writeLimiter, async (req, res) => {
   const teacherMessage  = cleanStr(req.body.teacherMessage,  2000);
   const nextSteps       = cleanStr(req.body.nextSteps,       2000);
   const enrollmentId    = cleanStr(req.body.enrollmentId,    50);
+
+  const attachmentUrl  = cleanStr(req.body.attachmentUrl, 2000);
+  const attachmentName = cleanStr(req.body.attachmentName, 500);
+  const attachmentType = cleanStr(req.body.attachmentType, 100);
+  const attachmentPath = cleanStr(req.body.attachmentPath, 1000);
 
   if (req.body.overallRating !== undefined && req.body.overallRating !== null && overallRating === null) {
     return res.status(400).json({ error: 'overallRating must be a number between 1 and 5' });
@@ -1241,6 +1231,10 @@ router.post('/reports', writeLimiter, async (req, res) => {
         homeworkNotes,
         teacherMessage,
         nextSteps,
+        attachmentUrl: attachmentUrl || null,
+        attachmentName: attachmentName || null,
+        attachmentType: attachmentType || null,
+        attachmentPath: attachmentPath || null,
       },
       include: {
         student: {
@@ -1262,69 +1256,70 @@ router.post('/reports', writeLimiter, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────
-// PATCH /api/teacher/reports/:id
-// Update a DRAFT report
-// Cannot edit a report that has already been SENT
+// 1) REPLACE  PATCH /api/teacher/reports/:id
+//    DRAFT edits freely. SENT can now be edited too — doing so sets
+//    updatedSinceSent=true so the UI can show "edited, not re-sent".
+//    Handles attachment replace/remove with storage cleanup.
 // ─────────────────────────────────────────────────────────
 router.patch('/reports/:id', async (req, res) => {
   const { id } = req.params;
   const {
-    period,
-    overallRating,
-    tajweedProgress,
-    recitationNotes,
-    behaviourNotes,
-    homeworkNotes,
-    teacherMessage,
-    nextSteps,
+    period, overallRating, tajweedProgress, recitationNotes,
+    behaviourNotes, homeworkNotes, teacherMessage, nextSteps,
+    attachmentUrl, attachmentName, attachmentType, attachmentPath, removeAttachment,
   } = req.body;
-
+ 
   try {
     const existing = await prisma.progressReport.findUnique({ where: { id } });
-
     if (!existing || existing.teacherId !== req.teacher.id) {
       return res.status(404).json({ error: 'Report not found' });
     }
-
-    if (existing.status === 'SENT') {
-      return res.status(409).json({
-        error: 'Cannot edit a report that has already been sent to the parent',
-      });
-    }
-
+ 
     if (overallRating !== undefined && overallRating !== null) {
       const rating = Number(overallRating);
       if (isNaN(rating) || rating < 1 || rating > 5) {
-        return res.status(400).json({
-          error: 'overallRating must be a number between 1 and 5',
-        });
+        return res.status(400).json({ error: 'overallRating must be 1–5' });
       }
     }
-
-    const updateData = {};
-    if (period          !== undefined) updateData.period          = period.trim();
-    if (overallRating   !== undefined) updateData.overallRating   = overallRating ? Number(overallRating) : null;
-    if (tajweedProgress !== undefined) updateData.tajweedProgress = tajweedProgress?.trim() || null;
-    if (recitationNotes !== undefined) updateData.recitationNotes = recitationNotes?.trim() || null;
-    if (behaviourNotes  !== undefined) updateData.behaviourNotes  = behaviourNotes?.trim()  || null;
-    if (homeworkNotes   !== undefined) updateData.homeworkNotes   = homeworkNotes?.trim()   || null;
-    if (teacherMessage  !== undefined) updateData.teacherMessage  = teacherMessage?.trim()  || null;
-    if (nextSteps       !== undefined) updateData.nextSteps       = nextSteps?.trim()        || null;
-
+ 
+    const data = {};
+    if (period          !== undefined) data.period          = period.trim();
+    if (overallRating   !== undefined) data.overallRating   = overallRating ? Number(overallRating) : null;
+    if (tajweedProgress !== undefined) data.tajweedProgress = tajweedProgress?.trim() || null;
+    if (recitationNotes !== undefined) data.recitationNotes = recitationNotes?.trim() || null;
+    if (behaviourNotes  !== undefined) data.behaviourNotes  = behaviourNotes?.trim()  || null;
+    if (homeworkNotes   !== undefined) data.homeworkNotes   = homeworkNotes?.trim()   || null;
+    if (teacherMessage  !== undefined) data.teacherMessage  = teacherMessage?.trim()  || null;
+    if (nextSteps       !== undefined) data.nextSteps       = nextSteps?.trim()       || null;
+ 
+    // Attachment replace / remove (delete old file from storage)
+    const isReplacing = attachmentUrl !== undefined && attachmentUrl;
+    const isRemoving  = removeAttachment === true && !attachmentUrl;
+    if (isReplacing) {
+      if (existing.attachmentUrl) await deleteStoredFile({ path: existing.attachmentPath, url: existing.attachmentUrl, bucket: "reports" });
+      data.attachmentUrl  = attachmentUrl.trim();
+      data.attachmentName = attachmentName?.trim() || null;
+      data.attachmentType = attachmentType?.trim() || null;
+      data.attachmentPath = attachmentPath?.trim() || null;
+    } else if (isRemoving && existing.attachmentUrl) {
+      await deleteStoredFile({ path: existing.attachmentPath, url: existing.attachmentUrl, bucket: "reports" });
+      data.attachmentUrl = null; data.attachmentName = null; data.attachmentType = null; data.attachmentPath = null;
+    }
+ 
+    if (Object.keys(data).length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
+    }
+ 
+    // If the report was already SENT and we're changing content, flag it.
+    if (existing.status === 'SENT') {
+      data.updatedSinceSent = true;
+    }
+ 
     const updated = await prisma.progressReport.update({
-      where:   { id },
-      data:    updateData,
-      include: {
-        student: {
-          select: {
-            id:      true,
-            name:    true,
-            account: { select: { email: true, name: true } },
-          },
-        },
-      },
+      where: { id }, data,
+      include: { student: { select: { id: true, name: true, account: { select: { email: true, name: true } } } } },
     });
-
+ 
     return res.json({ report: updated });
   } catch (err) {
     console.error('Report update failed:', err);
@@ -1333,82 +1328,46 @@ router.patch('/reports/:id', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────
-// POST /api/teacher/reports/:id/send
-// Send a DRAFT report to the parent via email
-// Marks report as SENT — cannot be edited after this
+// 3) REPLACE  POST /api/teacher/reports/:id/send
+//    Sends to the parent, now passing the attachment link. Sets
+//    lastSentAt and clears updatedSinceSent. Works for first send.
 // ─────────────────────────────────────────────────────────
 router.post('/reports/:id/send', async (req, res) => {
   const { id } = req.params;
-
   try {
     const report = await prisma.progressReport.findUnique({
-      where:   { id },
-      include: {
-        student: {
-          select: {
-            id:      true,
-            name:    true,
-            account: { select: { email: true, name: true } },
-          },
-        },
-      },
+      where: { id },
+      include: { student: { select: { id: true, name: true, account: { select: { email: true, name: true } } } } },
     });
-
     if (!report || report.teacherId !== req.teacher.id) {
       return res.status(404).json({ error: 'Report not found' });
     }
-
     if (report.status === 'SENT') {
-      return res.status(409).json({
-        error:  'Report has already been sent',
-        sentAt: report.sentAt,
-      });
+      return res.status(409).json({ error: 'Report already sent. Use Re-send to send the updated version.', sentAt: report.sentAt });
     }
-
-    // Recipient is the account holder (parent or solo adult).
+ 
     const parentEmail = report.student.account.email;
     const parentName  = report.student.account.name || 'Parent';
-    const childName   = report.student.name;
-
-    // Send email — non-blocking failure
-    // If email fails, we still mark the report as sent
-    // and log the error for manual follow-up
+ 
     let emailError = null;
     try {
       await sendProgressReport({
-        parentEmail,
-        parentName,
-        childName,
-        teacherName:     req.teacher.name,
-        period:          report.period,
-        courseType:      report.courseType,
-        overallRating:   report.overallRating,
-        tajweedProgress: report.tajweedProgress,
-        recitationNotes: report.recitationNotes,
-        behaviourNotes:  report.behaviourNotes,
-        homeworkNotes:   report.homeworkNotes,
-        teacherMessage:  report.teacherMessage,
-        nextSteps:       report.nextSteps,
+        parentEmail, parentName, childName: report.student.name,
+        teacherName: req.teacher.name, period: report.period, courseType: report.courseType,
+        overallRating: report.overallRating, tajweedProgress: report.tajweedProgress,
+        recitationNotes: report.recitationNotes, behaviourNotes: report.behaviourNotes,
+        homeworkNotes: report.homeworkNotes, teacherMessage: report.teacherMessage,
+        nextSteps: report.nextSteps,
+        attachmentUrl: report.attachmentUrl, attachmentName: report.attachmentName, // ← NEW
       });
-
-      console.log(`✅ Progress report emailed to ${parentEmail}`);
-    } catch (emailErr) {
-      emailError = emailErr.message;
-      console.error(`❌ Email failed for report ${id}:`, emailErr.message);
-    }
-
-    // Mark report as SENT regardless of email outcome
+    } catch (emailErr) { emailError = emailErr.message; console.error('Report email failed:', emailErr.message); }
+ 
     const updated = await prisma.progressReport.update({
       where: { id },
-      data:  { status: 'SENT', sentAt: new Date() },
+      data: { status: 'SENT', sentAt: report.sentAt || new Date(), lastSentAt: new Date(), updatedSinceSent: false },
     });
-
-    return res.json({
-      report:     updated,
-      emailSent:  !emailError,
-      emailError: emailError || null,
-      sentTo:     parentEmail,
-    });
+ 
+    return res.json({ report: updated, emailSent: !emailError, emailError, sentTo: parentEmail });
   } catch (err) {
     console.error('Report send failed:', err);
     return res.status(500).json({ error: 'Failed to send report' });
@@ -1416,33 +1375,76 @@ router.post('/reports/:id/send', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────
-// DELETE /api/teacher/reports/:id
-// Delete a DRAFT report
-// Cannot delete a SENT report
+// 2) REPLACE  DELETE /api/teacher/reports/:id
+//    Now allows deleting SENT reports too (guarded on the frontend by a
+//    typed confirmation). Cleans up the attachment file from storage.
 // ─────────────────────────────────────────────────────────
 router.delete('/reports/:id', async (req, res) => {
   const { id } = req.params;
-
   try {
     const existing = await prisma.progressReport.findUnique({ where: { id } });
-
     if (!existing || existing.teacherId !== req.teacher.id) {
       return res.status(404).json({ error: 'Report not found' });
     }
-
-    if (existing.status === 'SENT') {
-      return res.status(409).json({
-        error: 'Cannot delete a report that has already been sent to the parent',
-      });
+ 
+    // Clean up the attachment file (best-effort)
+    if (existing.attachmentUrl) {
+      await deleteStoredFile({ path: existing.attachmentPath, url: existing.attachmentUrl, bucket: "reports" });
     }
-
+ 
     await prisma.progressReport.delete({ where: { id } });
-
-    console.log(`✅ Report deleted: ${id}`);
-    return res.json({ message: 'Report deleted successfully' });
+    return res.json({ message: 'Report deleted' });
   } catch (err) {
-    console.error('Report deletion failed:', err);
+    console.error('Report delete failed:', err);
     return res.status(500).json({ error: 'Failed to delete report' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// 4) ADD  POST /api/teacher/reports/:id/resend
+//    Re-send an already-SENT report (e.g. after a correction). Resets
+//    the updatedSinceSent flag and updates lastSentAt.
+// ─────────────────────────────────────────────────────────
+router.post('/reports/:id/resend', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const report = await prisma.progressReport.findUnique({
+      where: { id },
+      include: { student: { select: { id: true, name: true, account: { select: { email: true, name: true } } } } },
+    });
+    if (!report || report.teacherId !== req.teacher.id) {
+      return res.status(404).json({ error: 'Report not found' });
+    }
+    if (report.status !== 'SENT') {
+      return res.status(409).json({ error: 'Only a sent report can be re-sent. Use Send first.' });
+    }
+ 
+    const parentEmail = report.student.account.email;
+    const parentName  = report.student.account.name || 'Parent';
+ 
+    let emailError = null;
+    try {
+      await sendProgressReport({
+        parentEmail, parentName, childName: report.student.name,
+        teacherName: req.teacher.name, period: report.period, courseType: report.courseType,
+        overallRating: report.overallRating, tajweedProgress: report.tajweedProgress,
+        recitationNotes: report.recitationNotes, behaviourNotes: report.behaviourNotes,
+        homeworkNotes: report.homeworkNotes, teacherMessage: report.teacherMessage,
+        nextSteps: report.nextSteps,
+        attachmentUrl: report.attachmentUrl, attachmentName: report.attachmentName,
+        isResend: true, // ← lets the email note it's an updated version
+      });
+    } catch (emailErr) { emailError = emailErr.message; console.error('Report resend failed:', emailErr.message); }
+ 
+    const updated = await prisma.progressReport.update({
+      where: { id },
+      data: { lastSentAt: new Date(), updatedSinceSent: false },
+    });
+ 
+    return res.json({ report: updated, emailSent: !emailError, emailError, sentTo: parentEmail });
+  } catch (err) {
+    console.error('Report resend failed:', err);
+    return res.status(500).json({ error: 'Failed to re-send report' });
   }
 });
 
