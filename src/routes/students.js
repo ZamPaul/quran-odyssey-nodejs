@@ -111,8 +111,8 @@ router.post('/', requireAuth, async (req, res) => {
   // Final age = derived from DOB when present, else the manual value.
   // Validate the FINAL age so the bound applies either way (no DOB bypass).
   const finalAge = dobResult.date ? ageFromDob(dobResult.date) : parseInt(age, 10);
-  if (isNaN(finalAge) || finalAge < 4 || finalAge > 99) {
-    return res.status(400).json({ error: 'Age must be between 4 and 99' });
+  if (isNaN(finalAge) || finalAge < 1 || finalAge > 99) {
+    return res.status(400).json({ error: 'Age must be between 1 and 99' });
   }
 
   try {
