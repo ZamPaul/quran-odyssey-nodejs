@@ -23,6 +23,66 @@ const VALID_STATUSES = ["SCHEDULED", "COMPLETED", "CANCELLED", "MISSED"];
 function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
 function endOfDay(d) { const x = new Date(d); x.setHours(23, 59, 59, 999); return x; }
 
+const BULK_CAP = 100; // never act on more than this at once
+const BULK_STATUSES = ["SCHEDULED", "CANCELLED", "MISSED"]; // NOT COMPLETED (decision)
+
+
+async function findSessionConflicts({ studentId, teacherId, startUtc, endUtc, excludeId }) {
+  const candidates = await prisma.classSession.findMany({
+    where: {
+      status: { in: ["SCHEDULED", "COMPLETED"] },
+      ...(excludeId ? { id: { not: excludeId } } : {}),
+      scheduledAt: {
+        gte: new Date(startUtc.getTime() - 6 * 3600 * 1000),
+        lte: new Date(endUtc.getTime() + 6 * 3600 * 1000),
+      },
+      OR: [{ studentId }, { teacherId }],
+    },
+    select: {
+      id: true, studentId: true, teacherId: true, scheduledAt: true, durationMins: true,
+      student: { select: { name: true } }, teacher: { select: { name: true } },
+    },
+  });
+  const hits = [];
+  for (const c of candidates) {
+    const cStart = new Date(c.scheduledAt);
+    const cEnd = new Date(cStart.getTime() + (c.durationMins || 30) * 60000);
+    if (overlaps(startUtc, endUtc, cStart, cEnd)) {
+      hits.push({
+        id: c.id,
+        who: c.studentId === studentId ? "student" : "teacher",
+        with: c.studentId === studentId ? c.student?.name : c.teacher?.name,
+        scheduledAt: c.scheduledAt,
+      });
+    }
+  }
+  return hits;
+}
+
+// ─────────────────────────────────────────────────────────
+// SHARED: delete guard. A session may be hard-deleted ONLY if it is NOT
+// completed and has NO attendance record. (AttendanceRecord cascades on
+// session delete, so deleting a session with attendance would silently
+// destroy teaching records — we refuse.)
+// Returns { ok } or { ok:false, reason }.
+// ─────────────────────────────────────────────────────────
+async function canHardDelete(sessionId) {
+  const s = await prisma.classSession.findUnique({
+    where: { id: sessionId },
+    select: { id: true, status: true, attendance: { select: { id: true } } },
+  });
+  if (!s) return { ok: false, reason: "not_found" };
+  if (s.status === "COMPLETED") return { ok: false, reason: "completed" };
+  if (s.attendance) return { ok: false, reason: "has_attendance" };
+  return { ok: true };
+}
+ 
+const DELETE_REFUSAL_MSG = {
+  completed: "Completed sessions can't be deleted (they're teaching records). Cancel it instead.",
+  has_attendance: "This session has an attendance record and can't be deleted. Cancel it instead.",
+  not_found: "Session not found.",
+};
+
 // ═════════════════════════════════════════════════════════
 // GET /api/admin/sessions
 // List + filter. Query: ?from= &to= &teacherId= &studentId= &status=
@@ -70,9 +130,77 @@ router.get("/", async (req, res) => {
 // calendar (decision #5). Body: { teacherId, studentId, courseType,
 // scheduledAt, durationMins?, zoomLink?, enrollmentId? }
 // ═════════════════════════════════════════════════════════
-router.post("/", async (req, res) => {
-  const { teacherId, studentId, courseType, scheduledAt, durationMins, zoomLink, enrollmentId } = req.body;
+// router.post("/", async (req, res) => {
+//   const { teacherId, studentId, courseType, scheduledAt, durationMins, zoomLink, enrollmentId } = req.body;
 
+//   const missing = [];
+//   if (!teacherId) missing.push("teacherId");
+//   if (!studentId) missing.push("studentId");
+//   if (!courseType) missing.push("courseType");
+//   if (!scheduledAt) missing.push("scheduledAt");
+//   if (missing.length) return res.status(400).json({ error: `Missing: ${missing.join(", ")}` });
+//   if (!VALID_COURSES.includes(courseType)) return res.status(400).json({ error: "Invalid courseType" });
+
+//   const when = new Date(scheduledAt);
+//   if (isNaN(when.getTime())) return res.status(400).json({ error: "Invalid scheduledAt" });
+//   const dur = durationMins ? parseInt(durationMins, 10) : 30;
+
+//   try {
+//     const [teacher, student] = await Promise.all([
+//       prisma.teacher.findUnique({ where: { id: teacherId } }),
+//       prisma.student.findUnique({ where: { id: studentId }, include: { account: { select: { email: true, name: true } } } }),
+//     ]);
+//     if (!teacher) return res.status(404).json({ error: "Teacher not found" });
+//     if (!student) return res.status(404).json({ error: "Student not found" });
+
+//     // If enrollmentId given, validate it belongs to this student+teacher
+//     if (enrollmentId) {
+//       const enr = await prisma.enrollment.findUnique({ where: { id: enrollmentId } });
+//       if (!enr || enr.studentId !== studentId) {
+//         return res.status(400).json({ error: "enrollmentId does not match this student" });
+//       }
+//     }
+
+//     // Calendar event on the teacher's calendar (non-fatal)
+//     let calEventId = null;
+//     try {
+//       const slotEnd = new Date(when.getTime() + dur * 60 * 1000);
+//       calEventId = await createBookingEvent({
+//         calendarId: teacher.calendarId,
+//         slotStart: when.toISOString(),
+//         slotEnd: slotEnd.toISOString(),
+//         studentName: student.name,
+//         parentName: student.account.name || student.account.email,
+//         courseInterest: courseType,
+//         studentEmail: student.account.email,
+//       });
+//     } catch (calErr) {
+//       console.error("⚠️  Calendar event creation failed (session still created):", calErr.message);
+//     }
+
+//     const session = await prisma.classSession.create({
+//       data: {
+//         teacherId, studentId, courseType, scheduledAt: when, durationMins: dur,
+//         zoomLink: zoomLink?.trim() || null, enrollmentId: enrollmentId || null,
+//         status: "SCHEDULED", calEventId,
+//       },
+//     });
+
+//     await logAudit(req, {
+//       action: "session.create", targetType: "ClassSession", targetId: session.id,
+//       targetLabel: student.name, metadata: { teacher: teacher.name, scheduledAt: when.toISOString() },
+//     });
+
+//     return res.status(201).json({ session });
+//   } catch (err) {
+//     console.error("Session create failed:", err);
+//     return res.status(500).json({ error: "Failed to create session" });
+//   }
+// });
+
+router.post("/", async (req, res) => {
+  const { teacherId, studentId, courseType, scheduledAt, durationMins, zoomLink, enrollmentId, confirmOverride } = req.body;
+ 
   const missing = [];
   if (!teacherId) missing.push("teacherId");
   if (!studentId) missing.push("studentId");
@@ -80,11 +208,12 @@ router.post("/", async (req, res) => {
   if (!scheduledAt) missing.push("scheduledAt");
   if (missing.length) return res.status(400).json({ error: `Missing: ${missing.join(", ")}` });
   if (!VALID_COURSES.includes(courseType)) return res.status(400).json({ error: "Invalid courseType" });
-
+ 
   const when = new Date(scheduledAt);
   if (isNaN(when.getTime())) return res.status(400).json({ error: "Invalid scheduledAt" });
   const dur = durationMins ? parseInt(durationMins, 10) : 30;
-
+  const endWhen = new Date(when.getTime() + dur * 60000);
+ 
   try {
     const [teacher, student] = await Promise.all([
       prisma.teacher.findUnique({ where: { id: teacherId } }),
@@ -92,23 +221,32 @@ router.post("/", async (req, res) => {
     ]);
     if (!teacher) return res.status(404).json({ error: "Teacher not found" });
     if (!student) return res.status(404).json({ error: "Student not found" });
-
-    // If enrollmentId given, validate it belongs to this student+teacher
+ 
     if (enrollmentId) {
       const enr = await prisma.enrollment.findUnique({ where: { id: enrollmentId } });
       if (!enr || enr.studentId !== studentId) {
         return res.status(400).json({ error: "enrollmentId does not match this student" });
       }
     }
-
-    // Calendar event on the teacher's calendar (non-fatal)
+ 
+    // ── Conflict check: warn + override ──
+    const conflicts = await findSessionConflicts({ studentId, teacherId, startUtc: when, endUtc: endWhen });
+    if (conflicts.length > 0 && !confirmOverride) {
+      return res.status(409).json({
+        error: "CONFLICT",
+        message: "This session overlaps an existing one.",
+        conflicts, // [{ who, with, scheduledAt }]
+        // The UI shows this and re-POSTs with confirmOverride:true to proceed.
+      });
+    }
+ 
+    // ── Calendar event (always, for single-add) ──
     let calEventId = null;
     try {
-      const slotEnd = new Date(when.getTime() + dur * 60 * 1000);
       calEventId = await createBookingEvent({
         calendarId: teacher.calendarId,
         slotStart: when.toISOString(),
-        slotEnd: slotEnd.toISOString(),
+        slotEnd: endWhen.toISOString(),
         studentName: student.name,
         parentName: student.account.name || student.account.email,
         courseInterest: courseType,
@@ -117,7 +255,7 @@ router.post("/", async (req, res) => {
     } catch (calErr) {
       console.error("⚠️  Calendar event creation failed (session still created):", calErr.message);
     }
-
+ 
     const session = await prisma.classSession.create({
       data: {
         teacherId, studentId, courseType, scheduledAt: when, durationMins: dur,
@@ -125,12 +263,13 @@ router.post("/", async (req, res) => {
         status: "SCHEDULED", calEventId,
       },
     });
-
+ 
     await logAudit(req, {
       action: "session.create", targetType: "ClassSession", targetId: session.id,
-      targetLabel: student.name, metadata: { teacher: teacher.name, scheduledAt: when.toISOString() },
+      targetLabel: student.name,
+      metadata: { teacher: teacher.name, scheduledAt: when.toISOString(), overrodeConflict: !!(conflicts.length && confirmOverride) },
     });
-
+ 
     return res.status(201).json({ session });
   } catch (err) {
     console.error("Session create failed:", err);
@@ -288,7 +427,7 @@ router.get("/meta/students", async (req, res) => {
     if (q && q.trim()) where.name = { contains: q.trim(), mode: "insensitive" };
     const students = await prisma.student.findMany({
       where, orderBy: { name: "asc" }, take: 20,
-      select: { id: true, name: true, courseInterest: true, account: { select: { email: true } }, enrollments: { where: { status: "ACTIVE" }, select: { id: true, teacherId: true, courseType: true } } },
+      select: { id: true, name: true, courseInterest: true, timezone: true, account: { select: { email: true } }, enrollments: { where: { status: "ACTIVE" }, select: { id: true, teacherId: true, courseType: true } } },
     });
     return res.json({ students });
   } catch (err) { return res.status(500).json({ error: "Failed to load students" }); }
@@ -473,6 +612,152 @@ router.post("/bulk/commit", async (req, res) => {
     return res.status(500).json({ error: "Failed to create sessions" });
   }
 });
+
+// ═════════════════════════════════════════════════════════
+// POST /api/admin/sessions/bulk-action
+// Body: { sessionIds: [], action: 'reassign'|'status'|'delete',
+//         toTeacherId?, status? }
+// Returns a per-session result summary (done / skipped + reasons).
+// Calendar is NOT touched here (except delete removes events). Reassign is
+// DB-only — admin re-syncs via the sync action afterward.
+// ═════════════════════════════════════════════════════════
+router.post("/bulk-action", async (req, res) => {
+  const { sessionIds, action, toTeacherId, status } = req.body;
+ 
+  if (!Array.isArray(sessionIds) || sessionIds.length === 0) {
+    return res.status(400).json({ error: "sessionIds array is required" });
+  }
+  if (sessionIds.length > BULK_CAP) {
+    return res.status(400).json({ error: `Act on at most ${BULK_CAP} sessions at a time.` });
+  }
+  if (!["reassign", "status", "delete"].includes(action)) {
+    return res.status(400).json({ error: "action must be reassign | status | delete" });
+  }
+ 
+  try {
+    // ── REASSIGN (DB only) ──
+    if (action === "reassign") {
+      if (!toTeacherId) return res.status(400).json({ error: "toTeacherId is required" });
+      const toTeacher = await prisma.teacher.findUnique({ where: { id: toTeacherId } });
+      if (!toTeacher) return res.status(404).json({ error: "Target teacher not found" });
+ 
+      // We stored calEventId on the OLD teacher's calendar. Since we're not
+      // touching the calendar here, those events are now stale. Null the
+      // calEventId so the session shows as "not synced" and the admin can
+      // re-sync to the new teacher's calendar. (Old event stays on the old
+      // calendar until re-sync — flagged; a future cleanup could delete it.)
+      const sessions = await prisma.classSession.findMany({
+        where: { id: { in: sessionIds } },
+        select: { id: true, teacherId: true, calEventId: true },
+      });
+ 
+      const done = [];
+      const skipped = [];
+      for (const s of sessions) {
+        if (s.teacherId === toTeacherId) { skipped.push({ id: s.id, reason: "already_assigned" }); continue; }
+        done.push(s.id);
+      }
+      if (done.length) {
+        await prisma.classSession.updateMany({
+          where: { id: { in: done } },
+          data: { teacherId: toTeacherId, calEventId: null }, // stale-null → needs re-sync
+        });
+      }
+ 
+      await logAudit(req, {
+        action: "session.bulkReassign", targetType: "ClassSession", targetId: null,
+        targetLabel: `${done.length} → ${toTeacher.name}`,
+        metadata: { count: done.length, skipped: skipped.length, toTeacher: toTeacher.name },
+      });
+ 
+      return res.json({
+        action, done: done.length, skipped,
+        note: "Reassigned in the app. Calendar events were NOT moved — use Sync to add them to the new teacher's calendar. Old calendar events remain on the previous teacher's calendar.",
+      });
+    }
+ 
+    // ── STATUS (not COMPLETED) ──
+    if (action === "status") {
+      if (!status || !BULK_STATUSES.includes(status)) {
+        return res.status(400).json({ error: `status must be one of: ${BULK_STATUSES.join(", ")} (COMPLETED not allowed in bulk)` });
+      }
+      // If moving to CANCELLED, remove calendar events (best-effort).
+      let calendarCleared = 0;
+      if (status === "CANCELLED") {
+        const withEvents = await prisma.classSession.findMany({
+          where: { id: { in: sessionIds }, calEventId: { not: null } },
+          include: { teacher: { select: { calendarId: true } } },
+        });
+        for (const s of withEvents) {
+          if (s.calEventId && s.teacher?.calendarId) {
+            try { await deleteBookingEvent(s.teacher.calendarId, s.calEventId); calendarCleared++; }
+            catch (e) { console.error("⚠️  Calendar delete failed:", e.message); }
+          }
+        }
+      }
+ 
+      const upd = await prisma.classSession.updateMany({
+        where: { id: { in: sessionIds } },
+        data: {
+          status,
+          ...(status === "CANCELLED" ? { calEventId: null } : {}),
+        },
+      });
+ 
+      await logAudit(req, {
+        action: "session.bulkStatus", targetType: "ClassSession", targetId: null,
+        targetLabel: `${upd.count} → ${status}`, metadata: { count: upd.count, status, calendarCleared },
+      });
+ 
+      return res.json({ action, done: upd.count, status, calendarCleared });
+    }
+ 
+    // ── DELETE (guarded) ──
+    if (action === "delete") {
+      const sessions = await prisma.classSession.findMany({
+        where: { id: { in: sessionIds } },
+        include: {
+          attendance: { select: { id: true } },
+          teacher: { select: { calendarId: true } },
+        },
+      });
+ 
+      const deletable = [];
+      const skipped = [];
+      for (const s of sessions) {
+        if (s.status === "COMPLETED") { skipped.push({ id: s.id, reason: "completed" }); continue; }
+        if (s.attendance) { skipped.push({ id: s.id, reason: "has_attendance" }); continue; }
+        deletable.push(s);
+      }
+ 
+      // Remove calendar events for the deletable ones (best-effort)
+      for (const s of deletable) {
+        if (s.calEventId && s.teacher?.calendarId) {
+          try { await deleteBookingEvent(s.teacher.calendarId, s.calEventId); }
+          catch (e) { console.error("⚠️  Calendar delete failed:", e.message); }
+        }
+      }
+ 
+      if (deletable.length) {
+        await prisma.classSession.deleteMany({ where: { id: { in: deletable.map((s) => s.id) } } });
+      }
+ 
+      await logAudit(req, {
+        action: "session.bulkDelete", targetType: "ClassSession", targetId: null,
+        targetLabel: `${deletable.length} deleted`,
+        metadata: { deleted: deletable.length, skipped: skipped.length },
+      });
+ 
+      return res.json({
+        action, done: deletable.length, skipped,
+        note: skipped.length ? "Some sessions were kept because they're completed or have attendance — cancel those instead." : undefined,
+      });
+    }
+  } catch (err) {
+    console.error("Bulk action failed:", err);
+    return res.status(500).json({ error: "Bulk action failed" });
+  }
+});
  
 // ─────────────────────────────────────────────────────────
 // POST /api/admin/sessions/sync-calendar
@@ -534,6 +819,46 @@ router.post("/sync-calendar", async (req, res) => {
   } catch (err) {
     console.error("Calendar sync failed:", err);
     return res.status(500).json({ error: "Failed to sync calendar" });
+  }
+});
+
+
+// ═════════════════════════════════════════════════════════
+// DELETE /api/admin/sessions/:id
+// Guarded hard delete. Removes the calendar event first, then the row.
+// Refuses on COMPLETED / has-attendance (those are cancel-only).
+// ═════════════════════════════════════════════════════════
+router.delete("/:id", async (req, res) => {
+  const { id } = req.params;
+  try {
+    const guard = await canHardDelete(id);
+    if (!guard.ok) {
+      const code = guard.reason === "not_found" ? 404 : 409;
+      return res.status(code).json({ error: DELETE_REFUSAL_MSG[guard.reason], reason: guard.reason });
+    }
+ 
+    const session = await prisma.classSession.findUnique({
+      where: { id },
+      include: { student: { select: { name: true } }, teacher: { select: { calendarId: true } } },
+    });
+ 
+    // Remove calendar event (best-effort) before deleting the row.
+    if (session.calEventId && session.teacher?.calendarId) {
+      try { await deleteBookingEvent(session.teacher.calendarId, session.calEventId); }
+      catch (e) { console.error("⚠️  Calendar delete failed:", e.message); }
+    }
+ 
+    await prisma.classSession.delete({ where: { id } });
+ 
+    await logAudit(req, {
+      action: "session.delete", targetType: "ClassSession", targetId: id, targetLabel: session.student.name,
+      metadata: { hardDelete: true },
+    });
+ 
+    return res.json({ deleted: true });
+  } catch (err) {
+    console.error("Session delete failed:", err);
+    return res.status(500).json({ error: "Failed to delete session" });
   }
 });
 
