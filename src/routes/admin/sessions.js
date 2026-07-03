@@ -13,6 +13,7 @@ import express from "express";
 import { prisma } from "../../lib/prisma.js";
 import { logAudit } from "../../lib/audit.js";
 import { createBookingEvent, deleteBookingEvent } from "../../services/googleCalendar.js";
+import { generateOccurrences, overlaps } from "../../lib/sessionSchedule.js";
 
 const router = express.Router();
 
@@ -291,6 +292,249 @@ router.get("/meta/students", async (req, res) => {
     });
     return res.json({ students });
   } catch (err) { return res.status(500).json({ error: "Failed to load students" }); }
+});
+
+router.get("/meta/enrollments", async (req, res) => {
+  const { studentId } = req.query;
+  if (!studentId) return res.status(400).json({ error: "studentId is required" });
+  try {
+    const enrollments = await prisma.enrollment.findMany({
+      where: { studentId, status: { in: ["ACTIVE", "PAUSED"] } },
+      orderBy: { createdAt: "desc" },
+      include: { teacher: { select: { id: true, name: true, calendarId: true } } },
+    });
+    const student = await prisma.student.findUnique({
+      where: { id: studentId },
+      select: { id: true, name: true, timezone: true, account: { select: { email: true, name: true } } },
+    });
+    if (!student) return res.status(404).json({ error: "Student not found" });
+    return res.json({ student, enrollments });
+  } catch (err) {
+    console.error("Enrollments meta failed:", err);
+    return res.status(500).json({ error: "Failed to load enrollments" });
+  }
+});
+ 
+// Shared: build + validate the config, generate occurrences, tag clashes.
+async function buildBulkPlan(body) {
+  const { enrollmentId, days, startDate, endDate, blackout } = body;
+ 
+  if (!enrollmentId) throw { status: 400, msg: "enrollmentId is required" };
+  if (!Array.isArray(days) || days.length === 0) throw { status: 400, msg: "Pick at least one weekday" };
+  if (!startDate || !endDate) throw { status: 400, msg: "startDate and endDate are required" };
+  if (endDate < startDate) throw { status: 400, msg: "endDate must be on or after startDate" };
+ 
+  for (const d of days) {
+    if (d.weekday == null || !/^\d{2}:\d{2}$/.test(d.startTime || "") || !d.durationMins) {
+      throw { status: 400, msg: "Each day needs weekday, startTime (HH:MM), durationMins" };
+    }
+  }
+ 
+  const enrollment = await prisma.enrollment.findUnique({
+    where: { id: enrollmentId },
+    include: {
+      teacher: { select: { id: true, name: true, calendarId: true } },
+      student: { select: { id: true, name: true, timezone: true, account: { select: { email: true, name: true } } } },
+    },
+  });
+  if (!enrollment) throw { status: 404, msg: "Enrollment not found" };
+ 
+  const timeZone = enrollment.student.timezone || "UTC";
+ 
+  // Generate the wall-clock-correct occurrences in the student's zone.
+  const occ = generateOccurrences({ startDate, endDate, timeZone, days, blackout: blackout || [] });
+ 
+  if (occ.length === 0) {
+    return { enrollment, timeZone, plan: [], summary: { total: 0, willCreate: 0, blackout: 0, conflict: 0 } };
+  }
+ 
+  // Fetch existing sessions in range for BOTH this student and this teacher,
+  // to detect double-booking either side.
+  const rangeStart = occ[0].startUtc;
+  const rangeEnd = occ[occ.length - 1].endUtc;
+  const existing = await prisma.classSession.findMany({
+    where: {
+      status: { in: ["SCHEDULED", "COMPLETED"] },
+      scheduledAt: { gte: new Date(rangeStart.getTime() - 86400000), lte: new Date(rangeEnd.getTime() + 86400000) },
+      OR: [{ studentId: enrollment.student.id }, { teacherId: enrollment.teacher.id }],
+    },
+    select: { id: true, studentId: true, teacherId: true, scheduledAt: true, durationMins: true },
+  });
+ 
+  const plan = occ.map((o) => {
+    let status = "ok";
+    let reason = null;
+    if (o.blackout) { status = "blackout"; reason = "Blackout date"; }
+    else {
+      for (const ex of existing) {
+        const exStart = new Date(ex.scheduledAt);
+        const exEnd = new Date(exStart.getTime() + (ex.durationMins || 30) * 60000);
+        if (overlaps(o.startUtc, o.endUtc, exStart, exEnd)) {
+          const who = ex.studentId === enrollment.student.id ? "student" : "teacher";
+          status = "conflict"; reason = `Overlaps an existing ${who} session`; break;
+        }
+      }
+    }
+    return {
+      dateISO: o.dateISO, weekday: o.weekday,
+      startUtc: o.startUtc.toISOString(), endUtc: o.endUtc.toISOString(),
+      durationMins: o.durationMins, status, reason,
+    };
+  });
+ 
+  const summary = {
+    total: plan.length,
+    willCreate: plan.filter((p) => p.status === "ok").length,
+    blackout: plan.filter((p) => p.status === "blackout").length,
+    conflict: plan.filter((p) => p.status === "conflict").length,
+  };
+ 
+  // sessionsPerWeek sanity (non-blocking warning)
+  const chosenPerWeek = new Set(days.map((d) => d.weekday)).size;
+  const warning =
+    enrollment.sessionsPerWeek && chosenPerWeek !== enrollment.sessionsPerWeek
+      ? `This enrolment is ${enrollment.sessionsPerWeek}×/week, but you selected ${chosenPerWeek} day(s).`
+      : null;
+ 
+  return { enrollment, timeZone, plan, summary, warning };
+}
+
+// ─────────────────────────────────────────────────────────
+// POST /api/admin/sessions/bulk/preview
+// Body: { enrollmentId, days:[{weekday,startTime,durationMins}],
+//         startDate, endDate, blackout:[] }
+// Returns the full plan with per-occurrence status. Writes NOTHING.
+// ─────────────────────────────────────────────────────────
+router.post("/bulk/preview", async (req, res) => {
+  try {
+    const { enrollment, timeZone, plan, summary, warning } = await buildBulkPlan(req.body);
+    return res.json({
+      timeZone,
+      student: { id: enrollment.student.id, name: enrollment.student.name },
+      teacher: { id: enrollment.teacher.id, name: enrollment.teacher.name },
+      courseType: enrollment.courseType,
+      plan, summary, warning,
+    });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.msg });
+    console.error("Bulk preview failed:", e);
+    return res.status(500).json({ error: "Failed to preview sessions" });
+  }
+});
+ 
+// ─────────────────────────────────────────────────────────
+// POST /api/admin/sessions/bulk/commit
+// Same body as preview. Re-generates + re-checks clashes server-side
+// (never trusts client instants), inserts ONLY 'ok' occurrences in a
+// transaction. Calendar events are NOT created here (use /sync-calendar).
+// Returns created session IDs + skipped summary.
+// ─────────────────────────────────────────────────────────
+router.post("/bulk/commit", async (req, res) => {
+  try {
+    const { enrollment, plan, summary, warning } = await buildBulkPlan(req.body);
+    const toCreate = plan.filter((p) => p.status === "ok");
+    if (toCreate.length === 0) {
+      return res.status(409).json({ error: "Nothing to create — all occurrences were blackout or conflicts.", summary });
+    }
+ 
+    const created = await prisma.$transaction(
+      toCreate.map((p) =>
+        prisma.classSession.create({
+          data: {
+            teacherId: enrollment.teacher.id,
+            studentId: enrollment.student.id,
+            enrollmentId: enrollment.id,
+            courseType: enrollment.courseType,
+            scheduledAt: new Date(p.startUtc),
+            durationMins: p.durationMins,
+            status: "SCHEDULED",
+            calEventId: null, // synced separately
+          },
+          select: { id: true, scheduledAt: true },
+        })
+      )
+    );
+ 
+    await logAudit(req, {
+      action: "session.bulkCreate", targetType: "Enrollment", targetId: enrollment.id,
+      targetLabel: enrollment.student.name,
+      metadata: { created: created.length, skipped: summary.total - created.length, teacher: enrollment.teacher.name },
+    });
+ 
+    return res.status(201).json({
+      createdCount: created.length,
+      createdIds: created.map((c) => c.id),
+      skipped: { blackout: summary.blackout, conflict: summary.conflict },
+      warning,
+    });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.msg });
+    console.error("Bulk commit failed:", e);
+    return res.status(500).json({ error: "Failed to create sessions" });
+  }
+});
+ 
+// ─────────────────────────────────────────────────────────
+// POST /api/admin/sessions/sync-calendar
+// Body: { sessionIds: [] }
+// Creates Google Calendar events for the given sessions that don't have
+// one yet. Best-effort, per-session result reporting. This is the admin's
+// explicit "sync" action — NOT automatic.
+// ─────────────────────────────────────────────────────────
+router.post("/sync-calendar", async (req, res) => {
+  const { sessionIds } = req.body;
+  if (!Array.isArray(sessionIds) || sessionIds.length === 0) {
+    return res.status(400).json({ error: "sessionIds array is required" });
+  }
+  // Bound the batch to avoid a runaway request.
+  if (sessionIds.length > 60) {
+    return res.status(400).json({ error: "Sync at most 60 sessions at a time." });
+  }
+ 
+  try {
+    const sessions = await prisma.classSession.findMany({
+      where: { id: { in: sessionIds } },
+      include: {
+        teacher: { select: { calendarId: true, name: true } },
+        student: { select: { name: true, account: { select: { email: true, name: true } } } },
+      },
+    });
+ 
+    const results = [];
+    for (const s of sessions) {
+      if (s.calEventId) { results.push({ id: s.id, status: "already-synced" }); continue; }
+      try {
+        const slotEnd = new Date(new Date(s.scheduledAt).getTime() + s.durationMins * 60000);
+        const eventId = await createBookingEvent({
+          calendarId: s.teacher.calendarId,
+          slotStart: new Date(s.scheduledAt).toISOString(),
+          slotEnd: slotEnd.toISOString(),
+          studentName: s.student.name,
+          parentName: s.student.account.name || s.student.account.email,
+          courseInterest: s.courseType,
+          studentEmail: s.student.account.email,
+        });
+        await prisma.classSession.update({ where: { id: s.id }, data: { calEventId: eventId } });
+        results.push({ id: s.id, status: "synced" });
+      } catch (calErr) {
+        console.error(`⚠️  Calendar sync failed for ${s.id}:`, calErr.message);
+        results.push({ id: s.id, status: "failed", error: calErr.message });
+      }
+    }
+ 
+    const synced = results.filter((r) => r.status === "synced").length;
+    const failed = results.filter((r) => r.status === "failed").length;
+ 
+    await logAudit(req, {
+      action: "session.syncCalendar", targetType: "ClassSession", targetId: null,
+      targetLabel: `${synced} synced`, metadata: { synced, failed, total: sessions.length },
+    });
+ 
+    return res.json({ synced, failed, alreadySynced: results.filter(r => r.status === "already-synced").length, results });
+  } catch (err) {
+    console.error("Calendar sync failed:", err);
+    return res.status(500).json({ error: "Failed to sync calendar" });
+  }
 });
 
 export default router;
