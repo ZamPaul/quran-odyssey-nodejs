@@ -103,6 +103,29 @@ enum UserStatus {
   SUSPENDED
 }
 
+enum CommChannel { 
+  EMAIL
+  WHATSAPP 
+}
+
+enum CommStatus { 
+  SENT 
+  FAILED 
+}
+
+enum CommType {
+  LEAD_CONFIRMATION
+  ADMIN_LEAD_NOTIFICATION
+  TRIAL_BOOKING_CONFIRMATION
+  ADMIN_TRIAL_NOTIFICATION
+  ENROLLMENT_ADMIN_NOTIFICATION
+  ENROLLMENT_APPROVED
+  ENROLLMENT_REJECTED
+  PROGRESS_REPORT
+  TEACHER_DUTIES_REMINDER
+  OTHER
+}
+
 // ─────────────────────────────────────────────────────────
 // USER
 // ─────────────────────────────────────────────────────────
@@ -129,6 +152,8 @@ model User {
   // removed at the end of Phase 2 when the 8 FKs are flipped to Student.
   teacher   Teacher? @relation("TeacherUser")
   auditLogs AuditLog[] @relation("AuditActor")
+
+  convertedLeads  TrialLead[] @relation("LeadConversions")
 
   @@map("users")
 }
@@ -278,6 +303,10 @@ model TrialLead {
   source       String     @default("landing_page")
   status       LeadStatus @default(NEW)
   notes        String?
+
+  convertedUserId String?
+  convertedUser   User?   @relation("LeadConversions", fields: [convertedUserId], references: [id])
+
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
@@ -499,4 +528,36 @@ model EnrollmentRequest {
 
   @@index([studentId])
   @@map("enrollment_requests")
+}
+
+// ─── COMMUNICATION LOG ─────────────────────────────────────
+// One row per send attempt (success OR failure). The stored {to, subject,
+// html, from} is the exact rendered email — enough to retry as-is or edit
+// and resend. Failure is a first-class status, not an edge case.
+model CommunicationLog {
+  id            String        @id @default(cuid())
+  channel       CommChannel   @default(EMAIL)   // EMAIL now; WHATSAPP-ready
+  type          CommType
+  status        CommStatus                       // SENT | FAILED
+  toAddress     String                           // recipient(s), joined for display/search
+  subject       String?
+  fromAddress   String?
+  providerId    String?                          // Resend data.id (or WA message id)
+  failureReason String?                          // captured error message
+  failureCode   String?                          // error name/code if present
+  html          String?                          // rendered body — needed to retry/resend-edit
+  relatedType   String?                          // "Lead" | "Student" | "Enrollment" | "ProgressReport" | "Teacher"
+  relatedId     String?
+  resendOfId    String?                          // if this row is a resend of another
+  resendOf      CommunicationLog?  @relation("Resends", fields: [resendOfId], references: [id])
+  resends       CommunicationLog[] @relation("Resends")
+  resolvedAt    DateTime?                        // set when a failure is resolved (successful resend or manual dismiss)
+  createdAt     DateTime      @default(now())
+
+  @@index([status])
+  @@index([type])
+  @@index([toAddress])
+  @@index([createdAt])
+  @@index([resendOfId])
+  @@map("communication_logs")
 }

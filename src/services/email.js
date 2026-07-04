@@ -3,6 +3,91 @@ import { Resend } from 'resend';
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
+const DEFAULT_FROM = "Quran Odyssey <bookings@quranodyssey.com>";
+ 
+/**
+ * Send an email and record the outcome.
+ * @param {Object} p
+ *   type          CommType (e.g. 'ENROLLMENT_APPROVED')
+ *   to            string | string[]
+ *   subject       string
+ *   html          string (rendered body)
+ *   from          string (optional; defaults to bookings@)
+ *   relatedType   'Lead'|'Student'|'Enrollment'|'ProgressReport'|'Teacher' (optional)
+ *   relatedId     string (optional)
+ *   resendOfId    string (optional; set when this is a manual resend)
+ * @returns { success, providerId, failureReason, logId }
+ */
+
+export async function sendAndLog(p) {
+  const {
+    type, to, subject, html,
+    from = DEFAULT_FROM, relatedType = null, relatedId = null, resendOfId = null,
+  } = p;
+ 
+  const toArr = Array.isArray(to) ? to : [to];
+  const toDisplay = toArr.join(", ");
+ 
+  let status = "SENT";
+  let providerId = null;
+  let failureReason = null;
+  let failureCode = null;
+ 
+  try {
+    const { data, error } = await resend.emails.send({ from, to: toArr, subject, html });
+    if (error) {
+      status = "FAILED";
+      failureReason = error.message || (typeof error === "string" ? error : JSON.stringify(error));
+      failureCode = error.name || error.statusCode?.toString() || null;
+    } else {
+      providerId = data?.id || null;
+    }
+  } catch (err) {
+    status = "FAILED";
+    failureReason = err.message || "Unknown send error";
+    failureCode = err.name || null;
+  }
+ 
+  let logId = null;
+  try {
+    const row = await prisma.communicationLog.create({
+      data: {
+        channel: "EMAIL", type, status,
+        toAddress: toDisplay, subject: subject || null, fromAddress: from,
+        providerId, failureReason, failureCode, html: html || null,
+        relatedType, relatedId, resendOfId,
+      },
+      select: { id: true },
+    });
+    logId = row.id;
+ 
+    // If this was a successful RESEND of a prior failure, mark the original resolved.
+    if (status === "SENT" && resendOfId) {
+      await prisma.communicationLog.update({
+        where: { id: resendOfId }, data: { resolvedAt: new Date() },
+      }).catch(() => {}); // non-critical
+    }
+  } catch (logErr) {
+    // Logging must never break the actual send flow.
+    console.error("⚠️  CommunicationLog write failed:", logErr.message);
+  }
+ 
+  if (status === "FAILED") {
+    console.error(`❌ Email FAILED [${type}] → ${toDisplay}: ${failureReason}`);
+  } else {
+    console.log(`✅ Email sent [${type}] → ${toDisplay} (id: ${providerId})`);
+  }
+ 
+  return { success: status === "SENT", providerId, failureReason, logId };
+}
+ 
+// Low-level resend used by the admin retry/resend-with-edit endpoints.
+// Sends an already-rendered {to, subject, html, from} and logs it as a
+// resend of `resendOfId`.
+export async function resendRendered({ to, subject, html, from, type, relatedType, relatedId, resendOfId }) {
+  return sendAndLog({ type: type || "OTHER", to, subject, html, from, relatedType, relatedId, resendOfId });
+}
+
 // ─── Template ─────────────────────────────────────────────
 function trialBookingTemplate({
   parentName,
@@ -173,6 +258,7 @@ export async function sendTrialBookingConfirmation({
   slotStart,        // UTC ISO string
   studentTimezone,  // IANA e.g. "Europe/London"
   bookingId,
+  studentId
 }) {
   // Format the date and time in the student's local timezone
   const start = new Date(slotStart);
@@ -216,25 +302,35 @@ export async function sendTrialBookingConfirmation({
     bookingId,
   });
 
-  try {
-    const { data, error } = await resend.emails.send({
-      from:    'Quran Odyssey <bookings@quranodyssey.com>',
-      to:      [to],
-      subject: `✓ Trial Class Confirmed — ${dateDisplay} at ${timeStart} (${tzAbbr})`,
-      html,
-    });
+  // try {
+  //   const { data, error } = await resend.emails.send({
+  //     from:    'Quran Odyssey <bookings@quranodyssey.com>',
+  //     to:      [to],
+  //     subject: `✓ Trial Class Confirmed — ${dateDisplay} at ${timeStart} (${tzAbbr})`,
+  //     html,
+  //   });
 
-    if (error) {
-      console.error('❌ Resend error:', error);
-      return { success: false, error };
-    }
+  //   if (error) {
+  //     console.error('❌ Resend error:', error);
+  //     return { success: false, error };
+  //   }
 
-    console.log(`✅ Booking confirmation email sent to ${to} — ID: ${data.id}`);
-    return { success: true, emailId: data.id };
-  } catch (err) {
-    console.error('❌ Email send failed:', err.message);
-    return { success: false, error: err.message };
-  }
+  //   console.log(`✅ Booking confirmation email sent to ${to} — ID: ${data.id}`);
+  //   return { success: true, emailId: data.id };
+  // } catch (err) {
+  //   console.error('❌ Email send failed:', err.message);
+  //   return { success: false, error: err.message };
+  // }
+
+  return sendAndLog({
+    type:        'TRIAL_BOOKING_CONFIRMATION',   // see table below
+    to: [to],
+    subject:     `✓ Trial Class Confirmed — ${dateDisplay} at ${timeStart} (${tzAbbr})`,                          // same subject string as before
+    html,
+    from:        'Quran Odyssey <bookings@quranodyssey.com>',  // keep this sender's from
+    relatedType: 'Student',                       // see table (or omit)
+    relatedId:  studentId,                       // see table (or omit)
+  });
 }
 
 // ── Add this function to src/services/email.js ─────────────
@@ -248,6 +344,7 @@ export async function sendAdminTrialNotification({
   genderPreference,
   dateDisplay,
   timeDisplay,
+  studentId
 }) {
   const rawEmails = process.env.ADMIN_NOTIFICATION_EMAILS || '';
   const adminEmails = rawEmails
@@ -359,19 +456,31 @@ export async function sendAdminTrialNotification({
 </body>
 </html>`;
 
-  const { error } = await resend.emails.send({
-    from:    'Quran Odyssey <bookings@quranodyssey.com>',
-    to:      adminEmails,
-    subject: `New Trial Booking — ${childName} | ${dateDisplay} at ${timeDisplay}`,
+  // const { error } = await resend.emails.send({
+  //   from:    'Quran Odyssey <bookings@quranodyssey.com>',
+  //   to:      adminEmails,
+  //   subject: `New Trial Booking — ${childName} | ${dateDisplay} at ${timeDisplay}`,
+  //   html,
+  // });
+
+  // if (error) throw new Error(`Admin notification failed: ${JSON.stringify(error)}`);
+  // console.log(`✅ Admin trial notification sent to: ${adminEmails.join(', ')}`);
+
+  return sendAndLog({
+    type:        'ADMIN_TRIAL_NOTIFICATION',   // see table below
+    to: adminEmails,
+    subject:     `New Trial Booking — ${childName} | ${dateDisplay} at ${timeDisplay}`,                          // same subject string as before
     html,
+    from:        'Quran Odyssey <bookings@quranodyssey.com>',  // keep this sender's from
+    relatedType: 'Student',                       // see table (or omit)
+    relatedId:   studentId,                       // see table (or omit)
   });
 
-  if (error) throw new Error(`Admin notification failed: ${JSON.stringify(error)}`);
-  console.log(`✅ Admin trial notification sent to: ${adminEmails.join(', ')}`);
+
 }
 
 // ─── Lead confirmation email to client ───────────────────────────────
-export async function sendLeadConfirmationEmail({ to, firstName }) {
+export async function sendLeadConfirmationEmail({ to, firstName, leadId }) {
   const html = `
 <!DOCTYPE html>
 <html lang="en">
@@ -454,25 +563,35 @@ export async function sendLeadConfirmationEmail({ to, firstName }) {
 </html>
   `.trim();
 
-  try {
-    const { data, error } = await resend.emails.send({
-      from:    'Quran Odyssey <bookings@quranodyssey.com>',
-      to:      [to],
-      subject: "We've received your request — Quran Odyssey",
-      html,
-    });
+  // try {
+  //   const { data, error } = await resend.emails.send({
+  //     from:    'Quran Odyssey <bookings@quranodyssey.com>',
+  //     to:      [to],
+  //     subject: "We've received your request — Quran Odyssey",
+  //     html,
+  //   });
 
-    if (error) {
-      console.error('Lead confirmation email error:', error);
-      return { success: false };
-    }
+  //   if (error) {
+  //     console.error('Lead confirmation email error:', error);
+  //     return { success: false };
+  //   }
 
-    console.log(`✅ Lead confirmation sent to ${to}`);
-    return { success: true };
-  } catch (err) {
-    console.error('Lead confirmation email failed:', err.message);
-    return { success: false };
-  }
+  //   console.log(`✅ Lead confirmation sent to ${to}`);
+  //   return { success: true };
+  // } catch (err) {
+  //   console.error('Lead confirmation email failed:', err.message);
+  //   return { success: false };
+  // }
+
+  return sendAndLog({
+    type:        'LEAD_CONFIRMATION',   // see table below
+    to: [to],
+    subject:     "We've received your request — Quran Odyssey",                          // same subject string as before
+    html,
+    from:        'Quran Odyssey <bookings@quranodyssey.com>',  // keep this sender's from
+    relatedType: 'Lead',                       // see table (or omit)
+    relatedId:   leadId,                       // see table (or omit)
+  });
 }
 
 // ─── Admin notification email to admins ──────────────────────────────
@@ -526,24 +645,34 @@ export async function sendAdminLeadNotification({ firstName, lastName, email, ph
 </html>
   `.trim();
 
-  try {
-    const { data, error } = await resend.emails.send({
-      from:    'Quran Odyssey System <bookings@quranodyssey.com>',
-      to:      ['zamielpaul@gmail.com', 'irhaasif@gmail.com', 'waqarbasit61@gmail.com', 'mahilmalik23@gmail.com'],
-      subject: `🔔 New Trial Lead: ${firstName} ${lastName}`,
-      html,
-    });
+  // try {
+  //   const { data, error } = await resend.emails.send({
+  //     from:    'Quran Odyssey System <bookings@quranodyssey.com>',
+  //     to:      ['zamielpaul@gmail.com', 'irhaasif@gmail.com', 'waqarbasit61@gmail.com', 'mahilmalik23@gmail.com'],
+  //     subject: `🔔 New Trial Lead: ${firstName} ${lastName}`,
+  //     html,
+  //   });
 
-    if (error) {
-      console.error('Admin notification email error:', error);
-      return { success: false };
-    }
+  //   if (error) {
+  //     console.error('Admin notification email error:', error);
+  //     return { success: false };
+  //   }
 
-    return { success: true };
-  } catch (err) {
-    console.error('Admin notification failed:', err.message);
-    return { success: false };
-  }
+  //   return { success: true };
+  // } catch (err) {
+  //   console.error('Admin notification failed:', err.message);
+  //   return { success: false };
+  // }
+
+  return sendAndLog({
+    type:        'ADMIN_LEAD_NOTIFICATION',   // see table below
+    to: ['zamielpaul@gmail.com', 'irhaasif@gmail.com', 'waqarbasit61@gmail.com', 'mahilmalik23@gmail.com'],
+    subject:     '🔔 New Trial Lead: ${firstName} ${lastName}',                          // same subject string as before
+    html,
+    from:        'Quran Odyssey <bookings@quranodyssey.com>',  // keep this sender's from
+    relatedType: 'Lead',                       // see table (or omit)
+    relatedId:   leadId,                       // see table (or omit)
+  });
 }
 
 // Add this function to your existing src/services/email.js
@@ -564,6 +693,7 @@ export async function sendProgressReport({
   isResend = false,     // ← NEW
   teacherMessage,
   nextSteps,
+  reportId
 }) {
   const stars     = '⭐'.repeat(overallRating || 0);
   const noStars   = '☆'.repeat(5 - (overallRating || 0));
@@ -737,18 +867,28 @@ export async function sendProgressReport({
 </body>
 </html>`;
 
-  const { data, error } = await resend.emails.send({
-    from:    'Quran Odyssey <reports@quranodyssey.com>',
-    to:      parentEmail,
-    subject: `${childName}'s Progress Report — ${period}`,
+  // const { data, error } = await resend.emails.send({
+  //   from:    'Quran Odyssey <reports@quranodyssey.com>',
+  //   to:      parentEmail,
+  //   subject: `${childName}'s Progress Report — ${period}`,
+  //   html,
+  // });
+
+  // if (error) {
+  //   throw new Error(`Resend error: ${JSON.stringify(error)}`);
+  // }
+
+  // return data;
+
+  return sendAndLog({
+    type:        'PROGRESS_REPORT',   // see table below
+    to: parentEmail,
+    subject:     `${childName}'s Progress Report — ${period}`,                          // same subject string as before
     html,
+    from:        'Quran Odyssey <reports@quranodyssey.com>',  // keep this sender's from
+    relatedType: 'ProgressReport',                       // see table (or omit)
+    relatedId:   reportId,                       // see table (or omit)
   });
-
-  if (error) {
-    throw new Error(`Resend error: ${JSON.stringify(error)}`);
-  }
-
-  return data;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -831,15 +971,25 @@ export async function sendEnrollmentAdminNotification({
 </body>
 </html>`;
 
-  const { error } = await resend.emails.send({
-    from:    'Quran Odyssey <bookings@quranodyssey.com>',
-    to:      adminEmails,
-    subject: `New Enrollment Application — ${childName} | ${courseLabel}`,
-    html,
-  });
+  // const { error } = await resend.emails.send({
+  //   from:    'Quran Odyssey <bookings@quranodyssey.com>',
+  //   to:      adminEmails,
+  //   subject: `New Enrollment Application — ${childName} | ${courseLabel}`,
+  //   html,
+  // });
 
-  if (error) throw new Error(`Enrollment admin notification failed: ${JSON.stringify(error)}`);
-  console.log(`✅ Enrollment admin notification sent to: ${adminEmails.join(', ')}`);
+  // if (error) throw new Error(`Enrollment admin notification failed: ${JSON.stringify(error)}`);
+  // console.log(`✅ Enrollment admin notification sent to: ${adminEmails.join(', ')}`);
+
+  return sendAndLog({
+    type:        'ENROLLMENT_ADMIN_NOTIFICATION',   // see table below
+    to: adminEmails,
+    subject:     `New Enrollment Application — ${childName} | ${courseLabel}`,                          // same subject string as before
+    html,
+    from:        'Quran Odyssey <bookings@quranodyssey.com>',  // keep this sender's from
+    relatedType: 'Enrollment',                       // see table (or omit)
+    relatedId:   applicationId,                       // see table (or omit)
+  });
 }
 
 // ─── sendEnrollmentApproved ───────────────────────────────
@@ -896,19 +1046,29 @@ export async function sendEnrollmentApproved({
 </body>
 </html>`;
 
-  const { data, error } = await resend.emails.send({
-    from:    'Quran Odyssey <bookings@quranodyssey.com>',
-    to:      [to],
-    subject: `✓ Enrollment Approved — ${childName} | ${courseLabel}`,
-    html,
-  });
+  // const { data, error } = await resend.emails.send({
+  //   from:    'Quran Odyssey <bookings@quranodyssey.com>',
+  //   to:      [to],
+  //   subject: `✓ Enrollment Approved — ${childName} | ${courseLabel}`,
+  //   html,
+  // });
 
-  if (error) {
-    console.error('Enrollment approved email error:', error);
-    return { success: false };
-  }
-  console.log(`✅ Enrollment approved email sent to ${to} — ID: ${data.id}`);
-  return { success: true };
+  // if (error) {
+  //   console.error('Enrollment approved email error:', error);
+  //   return { success: false };
+  // }
+  // console.log(`✅ Enrollment approved email sent to ${to} — ID: ${data.id}`);
+  // return { success: true };
+
+  return sendAndLog({
+    type:        'ENROLLMENT_APPROVED',   // see table below
+    to: [to],
+    subject:     `✓ Enrollment Approved — ${childName} | ${courseLabel}`,                          // same subject string as before
+    html,
+    from:        'Quran Odyssey <bookings@quranodyssey.com>',  // keep this sender's from
+    relatedType: 'Enrollment',                       // see table (or omit)
+    relatedId:   applicationId,                       // see table (or omit)
+  });
 }
 
 // sendTeacherDutiesReminder — the "Remind teacher" inline action emails
@@ -924,6 +1084,7 @@ export async function sendEnrollmentRejected({
   childName,
   courseLabel,
   rejectionReason,
+  applicationId
 }) {
   const html = `
 <!DOCTYPE html>
@@ -962,22 +1123,32 @@ export async function sendEnrollmentRejected({
 </body>
 </html>`;
 
-  const { data, error } = await resend.emails.send({
-    from:    'Quran Odyssey <bookings@quranodyssey.com>',
-    to:      [to],
-    subject: `Enrollment Application Update — ${courseLabel}`,
-    html,
-  });
+  // const { data, error } = await resend.emails.send({
+  //   from:    'Quran Odyssey <bookings@quranodyssey.com>',
+  //   to:      [to],
+  //   subject: `Enrollment Application Update — ${courseLabel}`,
+  //   html,
+  // });
 
-  if (error) {
-    console.error('Enrollment rejected email error:', error);
-    return { success: false };
-  }
-  console.log(`✅ Enrollment rejected email sent to ${to} — ID: ${data.id}`);
-  return { success: true };
+  // if (error) {
+  //   console.error('Enrollment rejected email error:', error);
+  //   return { success: false };
+  // }
+  // console.log(`✅ Enrollment rejected email sent to ${to} — ID: ${data.id}`);
+  // return { success: true };
+
+  return sendAndLog({
+    type:        'ENROLLMENT_REJECTED',   // see table below
+    to: [to],
+    subject:     `Enrollment Application Update — ${courseLabel}`,                          // same subject string as before
+    html,
+    from:        'Quran Odyssey <bookings@quranodyssey.com>',  // keep this sender's from
+    relatedType: 'Enrollment',                       // see table (or omit)
+    relatedId:   applicationId,                       // see table (or omit)
+  });
 }
 
-export async function sendTeacherDutiesReminder({ to, teacherName, unmarkedSessions, ungradedSubmissions, overdueReports }) {
+export async function sendTeacherDutiesReminder({ to, teacherName, unmarkedSessions, ungradedSubmissions, overdueReports, teacherId }) {
   const rows = [];
   if (unmarkedSessions > 0) rows.push(["Sessions awaiting attendance", unmarkedSessions, "Please mark attendance for your recent classes."]);
   if (ungradedSubmissions > 0) rows.push(["Submissions to grade", ungradedSubmissions, "Students are waiting on feedback."]);
@@ -1017,11 +1188,21 @@ export async function sendTeacherDutiesReminder({ to, teacherName, unmarkedSessi
   </div>`;
  
   // Uses your existing Resend client (same pattern as sendProgressReport et al.)
-  return resend.emails.send({
-    from:    'Quran Odyssey <alerts@quranodyssey.com>',            // your existing sender constant
-    to,
-    subject: "A quick reminder from Quran Odyssey",
+  // return resend.emails.send({
+  //   from:    'Quran Odyssey <alerts@quranodyssey.com>',            // your existing sender constant
+  //   to,
+  //   subject: "A quick reminder from Quran Odyssey",
+  //   html,
+  // });
+
+  return sendAndLog({
+    type:        'THE_TYPE_FOR_THIS_SENDER',   // see table below
+    to: to,
+    subject:     'A quick reminder from Quran Odyssey"',                          // same subject string as before
     html,
+    from:        'Quran Odyssey <alerts@quranodyssey.com>',  // keep this sender's from
+    relatedType: 'Teacher',                       // see table (or omit)
+    relatedId:   teacherId,                       // see table (or omit)
   });
 }
  

@@ -11,7 +11,7 @@
 //   import requestsRouter from './enrollmentRequests.js';
 //   router.use('/enrollment-requests', requestsRouter);
 
-import express from "express";
+import express, { application } from "express";
 import { prisma } from "../../lib/prisma.js";
 import { logAudit } from "../../lib/audit.js";
 import { sendEnrollmentApproved, sendEnrollmentRejected } from "../../services/email.js";
@@ -130,7 +130,7 @@ router.patch("/:id", async (req, res) => {
         .catch((e) => console.error("⚠️  Approval email failed:", e.message));
     }
     if (status === "REJECTED") {
-      sendEnrollmentRejected({ to: toEmail, parentName, childName, courseLabel, rejectionReason: rejectionReason.trim() })
+      sendEnrollmentRejected({ to: toEmail, parentName, childName, courseLabel, rejectionReason: rejectionReason.trim(), applicationId: id })
         .catch((e) => console.error("⚠️  Rejection email failed:", e.message));
     }
 

@@ -359,6 +359,7 @@ router.post('/trial', requireAuth, requireContactDetails, async (req, res) => {
         slotStart:       slot.toISOString(),
         studentTimezone: userTimezone,
         bookingId:       booking.id,
+        studentId: studentId,
       }),
       learner.account.phone
         ? sendTrialBookingWhatsApp({
@@ -388,6 +389,7 @@ router.post('/trial', requireAuth, requireContactDetails, async (req, res) => {
         studentTimezone: userTimezone,
         dateDisplay:      slot.toDateString(),
         timeDisplay:      slot.toISOString(),
+        studentId: studentId
       });
     } catch (adminEmailErr) {
       console.error('❌ Admin notification failed (booking still confirmed):', adminEmailErr.message);

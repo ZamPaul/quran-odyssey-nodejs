@@ -52,6 +52,7 @@ router.post("/trial", async (req, res) => {
     sendLeadConfirmationEmail({
       to: lead.email,
       firstName: lead.firstName,
+      leadId: lead.id
     }).catch((err) =>
       console.error("Lead confirmation email failed:", err.message),
     );

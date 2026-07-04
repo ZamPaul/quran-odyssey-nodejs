@@ -456,6 +456,7 @@ router.post("/remind-teacher", async (req, res) => {
         unmarkedSessions: unmarked,
         ungradedSubmissions: ungraded,
         overdueReports,
+        teacherId: teacherId
       });
     } catch (e) {
       emailError = e.message;

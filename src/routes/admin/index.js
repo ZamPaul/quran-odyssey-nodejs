@@ -18,7 +18,9 @@ import teachersRouter from './teachers.js';
 import requestsRouter from './enrollmentRequests.js';
 import trialsRouter from './trials.js';
 import sessionsRouter from './sessions.js';
-import oversightRouter from './oversight.js';    
+import oversightRouter from './oversight.js';   
+import commsRouter from './communications.js';
+import leadsRouter from './leads.js';
 
 const router = express.Router();
 
@@ -58,6 +60,8 @@ router.use('/enrollment-requests', requestsRouter);
 router.use('/trials', trialsRouter);
 router.use('/sessions', sessionsRouter);
 router.use('/oversight', oversightRouter);
+router.use('/communications', commsRouter);
+router.use('/leads', leadsRouter); 
 
 // Future sub-routers (added in later phases), e.g.:
 //   import accountsRouter from './accounts.js';

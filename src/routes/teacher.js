@@ -1359,6 +1359,7 @@ router.post('/reports/:id/send', async (req, res) => {
         homeworkNotes: report.homeworkNotes, teacherMessage: report.teacherMessage,
         nextSteps: report.nextSteps,
         attachmentUrl: report.attachmentUrl, attachmentName: report.attachmentName, // ← NEW
+        reportId: report.id
       });
     } catch (emailErr) { emailError = emailErr.message; console.error('Report email failed:', emailErr.message); }
  
@@ -1433,6 +1434,7 @@ router.post('/reports/:id/resend', async (req, res) => {
         nextSteps: report.nextSteps,
         attachmentUrl: report.attachmentUrl, attachmentName: report.attachmentName,
         isResend: true, // ← lets the email note it's an updated version
+        reportId: report.id
       });
     } catch (emailErr) { emailError = emailErr.message; console.error('Report resend failed:', emailErr.message); }
  
