@@ -911,6 +911,11 @@ export async function sendEnrollmentApproved({
   return { success: true };
 }
 
+// sendTeacherDutiesReminder — the "Remind teacher" inline action emails
+// the teacher a summary of their outstanding items. Matches the branded
+// style of your other Resend/React-Email templates.
+// ═══════════════════════════════════════════════════════════
+
 // ─── sendEnrollmentRejected ───────────────────────────────
 // Fired when admin rejects an enrollment application.
 export async function sendEnrollmentRejected({
@@ -971,3 +976,57 @@ export async function sendEnrollmentRejected({
   console.log(`✅ Enrollment rejected email sent to ${to} — ID: ${data.id}`);
   return { success: true };
 }
+
+export async function sendTeacherDutiesReminder({ to, teacherName, unmarkedSessions, ungradedSubmissions, overdueReports }) {
+  const rows = [];
+  if (unmarkedSessions > 0) rows.push(["Sessions awaiting attendance", unmarkedSessions, "Please mark attendance for your recent classes."]);
+  if (ungradedSubmissions > 0) rows.push(["Submissions to grade", ungradedSubmissions, "Students are waiting on feedback."]);
+  if (overdueReports > 0) rows.push(["Progress reports due", overdueReports, "Some students haven't had a report in over a month."]);
+ 
+  const itemsHtml = rows.map(([label, count, note]) => `
+    <tr>
+      <td style="padding:12px 0;border-bottom:1px solid #eef2f6;">
+        <div style="font-size:15px;font-weight:700;color:#0d2840;">${label}
+          <span style="display:inline-block;margin-left:8px;background:#faa71a;color:#0d2840;border-radius:6px;padding:1px 9px;font-size:13px;">${count}</span>
+        </div>
+        <div style="font-size:13px;color:#64748b;margin-top:2px;">${note}</div>
+      </td>
+    </tr>`).join("");
+ 
+  const html = `
+  <div style="font-family:'Plus Jakarta Sans',Arial,sans-serif;max-width:560px;margin:0 auto;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #e2e8f0;">
+    <div style="background:#0d2840;padding:24px 28px;">
+      <div style="color:#28b7d9;font-size:12px;font-weight:700;letter-spacing:1px;">QURAN ODYSSEY</div>
+      <div style="color:#ffffff;font-size:20px;font-weight:800;margin-top:4px;">A quick reminder</div>
+    </div>
+    <div style="padding:28px;">
+      <p style="font-size:15px;color:#334155;line-height:1.6;margin:0 0 18px;">
+        Assalamu alaikum ${teacherName},
+      </p>
+      <p style="font-size:15px;color:#334155;line-height:1.6;margin:0 0 18px;">
+        A few items on your teaching dashboard need attention:
+      </p>
+      <table style="width:100%;border-collapse:collapse;">${itemsHtml}</table>
+      <p style="font-size:14px;color:#64748b;line-height:1.6;margin:22px 0 0;">
+        Keeping these up to date helps families see their child's progress. JazakAllah khair for your dedication.
+      </p>
+    </div>
+    <div style="background:#f7f9fb;padding:16px 28px;border-top:1px solid #eef2f6;">
+      <div style="font-size:12px;color:#94a3b8;">Quran Odyssey · This is an automated reminder from the admin team.</div>
+    </div>
+  </div>`;
+ 
+  // Uses your existing Resend client (same pattern as sendProgressReport et al.)
+  return resend.emails.send({
+    from:    'Quran Odyssey <alerts@quranodyssey.com>',            // your existing sender constant
+    to,
+    subject: "A quick reminder from Quran Odyssey",
+    html,
+  });
+}
+ 
+// NOTE: reuse whatever `resend` client instance and `EMAIL_FROM` constant the
+// other senders in this file already use. If those are module-scoped in
+// email.js, this function picks them up automatically — no new import needed.
+// The Islamic greetings can be swapped for neutral ("Hi {name}" / "Thank you")
+// if the teacher base is mixed.
