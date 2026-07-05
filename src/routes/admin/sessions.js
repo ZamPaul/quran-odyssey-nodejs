@@ -113,7 +113,7 @@ router.get("/", async (req, res) => {
       orderBy: { scheduledAt: "asc" },
       include: {
         teacher: { select: { id: true, name: true, calendarId: true } },
-        student: { select: { id: true, name: true, account: { select: { email: true } } } },
+        student: { select: { id: true, name: true, timezone: true, account: { select: { email: true } } } },
         attendance: { select: { status: true } },
       },
     });

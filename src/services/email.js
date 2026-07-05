@@ -1,5 +1,6 @@
 // src/services/email.js
 import { Resend } from 'resend';
+import { prisma } from "../lib/prisma.js"
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
