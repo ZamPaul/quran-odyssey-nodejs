@@ -103,7 +103,7 @@ router.get("/", async (req, res) => {
 
       // Attendance in the scan window for active students, with the session time
       prisma.attendanceRecord.findMany({
-        where: { markedAt: { gte: attendanceWindowStart } },
+        where: { session: { scheduledAt: { gte: attendanceWindowStart } } },
         select: {
           studentId: true,
           status: true,
@@ -480,6 +480,36 @@ router.post("/remind-teacher", async (req, res) => {
   } catch (err) {
     console.error("Remind teacher failed:", err);
     return res.status(500).json({ error: "Failed to remind teacher" });
+  }
+});
+
+router.get("/unmarked-sessions", async (req, res) => {
+  const { teacherId, studentId } = req.query;
+  const now = new Date();
+  const cutoff10h = unmarkedCutoff(now);
+ 
+  // SAME filter the accountability count uses: SCHEDULED and >10h past.
+  const where = {
+    status: "SCHEDULED",
+    scheduledAt: { lt: cutoff10h },
+  };
+  if (teacherId) where.teacherId = teacherId;
+  if (studentId) where.studentId = studentId;
+ 
+  try {
+    const sessions = await prisma.classSession.findMany({
+      where,
+      orderBy: { scheduledAt: "desc" },
+      take: 300,
+      include: {
+        student: { select: { id: true, name: true } },
+        teacher: { select: { id: true, name: true } },
+      },
+    });
+    return res.json({ sessions });
+  } catch (err) {
+    console.error("Oversight unmarked-sessions failed:", err);
+    return res.status(500).json({ error: "Failed to load unmarked sessions" });
   }
 });
 
