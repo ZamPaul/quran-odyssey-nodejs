@@ -155,6 +155,9 @@ model User {
 
   convertedLeads  TrialLead[] @relation("LeadConversions")
 
+  deletedAt DateTime?   // soft-delete marker (null = live)
+  @@index([deletedAt])
+
   @@map("users")
 }
 
@@ -217,6 +220,9 @@ model Student {
   assignmentSubmissions AssignmentSubmission[]
   progressReports       ProgressReport[]       @relation("StudentReports")
   attendanceRecords     AttendanceRecord[]     @relation("StudentAttendance")
+
+  deletedAt DateTime?   // soft-delete marker (null = live)
+  @@index([deletedAt])
 
   @@index([accountId])
   @@map("students")

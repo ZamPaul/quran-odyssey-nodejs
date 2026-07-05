@@ -22,6 +22,7 @@ import oversightRouter from './oversight.js';
 import commsRouter from './communications.js';
 import leadsRouter from './leads.js';
 import analyticsRouter from './analytics.js';
+  import auditRouter from './audit.js';
 
 const router = express.Router();
 
@@ -64,6 +65,7 @@ router.use('/oversight', oversightRouter);
 router.use('/communications', commsRouter);
 router.use('/leads', leadsRouter); 
 router.use('/analytics', analyticsRouter);
+router.use('/audit', auditRouter);
 
 // Future sub-routers (added in later phases), e.g.:
 //   import accountsRouter from './accounts.js';

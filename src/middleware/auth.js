@@ -35,7 +35,7 @@ export const requireAuth = async (req, res, next) => {
         managedStudents: {
           orderBy: { createdAt: "asc" },
         },
-      },
+      }
     });
 
     if (!dbUser) {
