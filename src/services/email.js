@@ -1197,7 +1197,7 @@ export async function sendTeacherDutiesReminder({ to, teacherName, unmarkedSessi
   // });
 
   return sendAndLog({
-    type:        'THE_TYPE_FOR_THIS_SENDER',   // see table below
+    type:        'TEACHER_DUTIES_REMINDER',   // see table below
     to: to,
     subject:     'A quick reminder from Quran Odyssey"',                          // same subject string as before
     html,

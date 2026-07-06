@@ -70,18 +70,29 @@ export function computeStudentRisk(records) {
 }
 
 // recentReportKeys: Set of `${studentId}:${teacherId}` with a SENT report in window.
-export function isReportOverdue(
-  enrollment,
-  recentReportKeys,
-  now = new Date(),
-) {
+// export function isReportOverdue(
+//   enrollment,
+//   recentReportKeys,
+//   now = new Date(),
+// ) {
+//   if (enrollment.status !== "ACTIVE") return false;
+//   const started = new Date(enrollment.startDate);
+//   const cutoff = new Date(now.getTime() - OVERDUE_REPORT_DAYS * 86400000);
+//   if (started > cutoff) return false; // too new to be overdue
+//   return !recentReportKeys.has(
+//     `${enrollment.studentId}:${enrollment.teacherId}`,
+//   );
+// }
+
+// recentReportEnrollmentIds: Set of enrollmentId values that HAVE a SENT report
+// in the window. Keyed per-enrollment so a student taking two courses from the
+// same teacher is tracked separately (no cross-course masking).
+export function isReportOverdue(enrollment, recentReportEnrollmentIds, now = new Date()) {
   if (enrollment.status !== "ACTIVE") return false;
   const started = new Date(enrollment.startDate);
   const cutoff = new Date(now.getTime() - OVERDUE_REPORT_DAYS * 86400000);
   if (started > cutoff) return false; // too new to be overdue
-  return !recentReportKeys.has(
-    `${enrollment.studentId}:${enrollment.teacherId}`,
-  );
+  return !recentReportEnrollmentIds.has(enrollment.id);
 }
 
 export function unmarkedCutoff(now = new Date()) {

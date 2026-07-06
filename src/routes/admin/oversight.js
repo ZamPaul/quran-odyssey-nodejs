@@ -97,8 +97,8 @@ router.get("/", async (req, res) => {
 
       // SENT reports in the last 30d → keys of student:teacher that are covered
       prisma.progressReport.findMany({
-        where: { status: "SENT", sentAt: { gte: reportCutoff } },
-        select: { studentId: true, teacherId: true },
+        where: { status: "SENT", sentAt: { gte: reportCutoff }, enrollmentId: { not: null } },
+        select: { enrollmentId: true },
       }),
 
       // Attendance in the scan window for active students, with the session time
@@ -125,28 +125,43 @@ router.get("/", async (req, res) => {
     );
 
     // ── Overdue reports per teacher ──
-    const recentReportKeys = new Set(
-      recentReports.map((r) => `${r.studentId}:${r.teacherId}`),
-    );
+    // const recentReportKeys = new Set(
+    //   recentReports.map((r) => `${r.studentId}:${r.teacherId}`),
+    // );
+    const recentReportEnrollmentIds = new Set(recentReports.map((r) => r.enrollmentId));
+
     const overdueByTeacher = new Map();
     const overdueEnrollments = [];
+    // for (const e of activeEnrollments) {
+    //   if (
+    //     isReportOverdue(
+    //       {
+    //         status: "ACTIVE",
+    //         studentId: e.studentId,
+    //         teacherId: e.teacherId,
+    //         startDate: e.startDate,
+    //       },
+    //       recentReportKeys,
+    //       now,
+    //     )
+    //   ) {
+    //     overdueByTeacher.set(
+    //       e.teacherId,
+    //       (overdueByTeacher.get(e.teacherId) || 0) + 1,
+    //     );
+    //     overdueEnrollments.push(e);
+    //   }
+    // }
+
     for (const e of activeEnrollments) {
       if (
         isReportOverdue(
-          {
-            status: "ACTIVE",
-            studentId: e.studentId,
-            teacherId: e.teacherId,
-            startDate: e.startDate,
-          },
-          recentReportKeys,
+          { status: "ACTIVE", id: e.id, startDate: e.startDate },
+          recentReportEnrollmentIds,
           now,
         )
       ) {
-        overdueByTeacher.set(
-          e.teacherId,
-          (overdueByTeacher.get(e.teacherId) || 0) + 1,
-        );
+        overdueByTeacher.set(e.teacherId, (overdueByTeacher.get(e.teacherId) || 0) + 1);
         overdueEnrollments.push(e);
       }
     }
@@ -334,23 +349,21 @@ router.get("/reports", async (req, res) => {
             teacher: { select: { name: true } },
           },
         }),
+        // prisma.progressReport.findMany({
+        //   where: { status: "SENT", sentAt: { gte: reportCutoff } },
+        //   select: { studentId: true, teacherId: true },
+        // }),
         prisma.progressReport.findMany({
-          where: { status: "SENT", sentAt: { gte: reportCutoff } },
-          select: { studentId: true, teacherId: true },
+          where: { status: "SENT", sentAt: { gte: reportCutoff }, enrollmentId: { not: null } },
+          select: { enrollmentId: true },
         }),
       ]);
-      const keys = new Set(
-        recentReports.map((r) => `${r.studentId}:${r.teacherId}`),
-      );
+
+      const keys = new Set(recentReports.map((r) => r.enrollmentId));
       const overdueList = activeEnrollments
         .filter((e) =>
           isReportOverdue(
-            {
-              status: "ACTIVE",
-              studentId: e.studentId,
-              teacherId: e.teacherId,
-              startDate: e.startDate,
-            },
+            { status: "ACTIVE", id: e.id, startDate: e.startDate },
             keys,
             now,
           ),
@@ -364,6 +377,33 @@ router.get("/reports", async (req, res) => {
           courseType: e.courseType,
           startDate: e.startDate,
         }));
+
+      // const keys = new Set(
+      //   recentReports.map((r) => `${r.studentId}:${r.teacherId}`),
+      // );
+      // const overdueList = activeEnrollments
+      //   .filter((e) =>
+      //     isReportOverdue(
+      //       {
+      //         status: "ACTIVE",
+      //         studentId: e.studentId,
+      //         teacherId: e.teacherId,
+      //         startDate: e.startDate,
+      //       },
+      //       keys,
+      //       now,
+      //     ),
+      //   )
+      //   .map((e) => ({
+      //     enrollmentId: e.id,
+      //     studentId: e.studentId,
+      //     studentName: e.student.name,
+      //     teacherId: e.teacherId,
+      //     teacherName: e.teacher.name,
+      //     courseType: e.courseType,
+      //     startDate: e.startDate,
+      //   }));
+      
       return res.json({ overdueEnrollments: overdueList });
     } catch (err) {
       console.error("Oversight overdue reports failed:", err);
@@ -428,19 +468,24 @@ router.post("/remind-teacher", async (req, res) => {
         prisma.assignment.count({ where: { teacherId, status: "SUBMITTED" } }),
         prisma.enrollment.findMany({
           where: { status: "ACTIVE", teacherId },
-          select: { studentId: true, teacherId: true, startDate: true },
+          select: { id: true, studentId: true, teacherId: true, startDate: true },
         }),
-        prisma.progressReport.findMany({
-          where: { status: "SENT", teacherId, sentAt: { gte: reportCutoff } },
-          select: { studentId: true, teacherId: true },
-        }),
+        // prisma.progressReport.findMany({
+        //   where: { status: "SENT", teacherId, sentAt: { gte: reportCutoff } },
+        //   select: { studentId: true, teacherId: true },
+        // }),
+        prisma.progressReport.findMany({ where: { status: "SENT", teacherId, sentAt: { gte: reportCutoff }, enrollmentId: { not: null } }, select: { enrollmentId: true } }),
       ]);
-    const keys = new Set(
-      recentReports.map((r) => `${r.studentId}:${r.teacherId}`),
-    );
-    const overdueReports = activeEnrollments.filter((e) =>
-      isReportOverdue({ status: "ACTIVE", ...e }, keys, now),
-    ).length;
+
+    // const keys = new Set(
+    //   recentReports.map((r) => `${r.studentId}:${r.teacherId}`),
+    // );
+    // const overdueReports = activeEnrollments.filter((e) =>
+    //   isReportOverdue({ status: "ACTIVE", ...e }, keys, now),
+    // ).length;
+
+    const keys = new Set(recentReports.map((r) => r.enrollmentId));
+    const overdueReports = activeEnrollments.filter((e) => isReportOverdue({ status: "ACTIVE", id: e.id, startDate: e.startDate }, keys, now)).length;
 
     if (unmarked === 0 && ungraded === 0 && overdueReports === 0) {
       return res
