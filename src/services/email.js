@@ -335,17 +335,176 @@ export async function sendTrialBookingConfirmation({
 }
 
 // ── Add this function to src/services/email.js ─────────────
+// export async function sendAdminTrialNotification({
+//   parentName,
+//   childName,
+//   parentEmail,
+//   phone,
+//   courseLabel,
+//   studentTimezone,
+//   genderPreference,
+//   dateDisplay,
+//   timeDisplay,
+//   studentId
+// }) {
+//   const rawEmails = process.env.ADMIN_NOTIFICATION_EMAILS || '';
+//   const adminEmails = rawEmails
+//     .split(',')
+//     .map(e => e.trim())
+//     .filter(Boolean);
+
+//   if (adminEmails.length === 0) {
+//     console.warn('⚠️  ADMIN_NOTIFICATION_EMAILS not set — skipping admin notification');
+//     return;
+//   }
+
+//   const start = new Date(timeDisplay);
+//   const end   = new Date(start.getTime() + 30 * 60 * 1000);
+
+//   const timeStart = start.toLocaleTimeString('en-GB', {
+//     timeZone: studentTimezone,
+//     hour:     '2-digit',
+//     minute:   '2-digit',
+//   });
+
+//   const timeEnd = end.toLocaleTimeString('en-GB', {
+//     timeZone: studentTimezone,
+//     hour:     '2-digit',
+//     minute:   '2-digit',
+//   });
+
+//   // Get timezone abbreviation e.g. "BST", "EST"
+//   const tzAbbr = start.toLocaleTimeString('en-GB', {
+//     timeZone:     studentTimezone,
+//     timeZoneName: 'short',
+//   }).split(' ').pop();
+
+//   const newDateDisplay = start.toLocaleDateString('en-GB', {
+//     timeZone: studentTimezone,
+//     timeZoneName: "short",
+//     weekday:  'long',
+//     year:     'numeric',
+//     month:    'long',
+//     day:      'numeric',
+//   });
+
+//   const newTimeDisplay = `${timeStart} – ${timeEnd} (${tzAbbr})`;
+
+//   const genderLabel = {
+//     MALE:          'Male teacher preferred',
+//     FEMALE:        'Female teacher preferred',
+//     NO_PREFERENCE: 'No preference',
+//   }[genderPreference] || 'No preference';
+
+//   const html = `
+// <!DOCTYPE html>
+// <html lang="en">
+// <head><meta charset="UTF-8"/><title>New Trial Booking</title></head>
+// <body style="margin:0;padding:0;background:#f7f9fb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+//   <div style="max-width:560px;margin:0 auto;padding:32px 16px;">
+
+//     <div style="background:#0d2840;border-radius:16px 16px 0 0;padding:28px 32px;">
+//       <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:#28b7d9;margin-bottom:6px;">
+//         Quran Odyssey
+//       </div>
+//       <div style="font-size:22px;font-weight:800;color:#ffffff;">
+//         🗓 New Trial Class Booked
+//       </div>
+//       <div style="font-size:13px;color:rgba(255,255,255,0.5);margin-top:4px;">
+//         Action required — assign a teacher
+//       </div>
+//     </div>
+
+//     <div style="background:#ffffff;border-radius:0 0 16px 16px;padding:32px;border:1px solid #e2e8f0;border-top:none;">
+
+//       <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
+//         ${[
+//           ['Parent Name',        parentName],
+//           ['Child Name',         childName],
+//           ['Email',              parentEmail],
+//           ['Phone / WhatsApp',   phone || '—'],
+//           ['Course Interest',    courseLabel],
+//           ['Teacher Preference', genderLabel],
+//           ['Requested Date',     newDateDisplay],
+//           ['Requested Time',     newTimeDisplay],
+//         ].map(([label, value], i) => `
+//           <tr>
+//             <td style="padding:10px 14px;background:${i%2===0?'#f7f9fb':'#ffffff'};border:1px solid #e2e8f0;font-size:12px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.04em;width:36%;">
+//               ${label}
+//             </td>
+//             <td style="padding:10px 14px;background:${i%2===0?'#f7f9fb':'#ffffff'};border:1px solid #e2e8f0;font-size:13px;font-weight:600;color:#0f172a;">
+//               ${value}
+//             </td>
+//           </tr>`).join('')}
+//       </table>
+
+//       <div style="background:#fff8e7;border-radius:10px;padding:16px 18px;border-left:4px solid #faa71a;">
+//         <div style="font-size:13px;font-weight:700;color:#92400e;margin-bottom:4px;">
+//           Next Step
+//         </div>
+//         <div style="font-size:13px;color:#92400e;line-height:1.6;">
+//           1. Assign an appropriate teacher in Supabase → <strong>trial_bookings</strong> table → update <strong>teacherId</strong><br/>
+//           2. Create a Zoom link and share it with the student<br/>
+//           3. Event is visible in the <strong>Quran Odyssey — Trial Classes</strong> Google Calendar
+//         </div>
+//       </div>
+
+//       <p style="font-size:12px;color:#94a3b8;margin-top:20px;border-top:1px solid #e2e8f0;padding-top:16px;">
+//         Sent automatically by Quran Odyssey platform on booking confirmation.
+//       </p>
+//     </div>
+//   </div>
+// </body>
+// </html>`;
+
+//   // const { error } = await resend.emails.send({
+//   //   from:    'Quran Odyssey <bookings@quranodyssey.com>',
+//   //   to:      adminEmails,
+//   //   subject: `New Trial Booking — ${childName} | ${dateDisplay} at ${timeDisplay}`,
+//   //   html,
+//   // });
+
+//   // if (error) throw new Error(`Admin notification failed: ${JSON.stringify(error)}`);
+//   // console.log(`✅ Admin trial notification sent to: ${adminEmails.join(', ')}`);
+
+//   return sendAndLog({
+//     type:        'ADMIN_TRIAL_NOTIFICATION',   // see table below
+//     to: adminEmails,
+//     subject:     `New Trial Booking — ${childName} | ${dateDisplay} at ${timeDisplay}`,                          // same subject string as before
+//     html,
+//     from:        'Quran Odyssey <bookings@quranodyssey.com>',  // keep this sender's from
+//     relatedType: 'Student',                       // see table (or omit)
+//     relatedId:   studentId,                       // see table (or omit)
+//   });
+
+
+// }
+
+
+// ═══════════════════════════════════════════════════════════
+// REPLACE the existing sendAdminTrialNotification in
+// src/services/email.js with this version.
+//
+// Adds two rows to the admin email:
+//   1. Country  — the student's/parent's country (from learner.country)
+//   2. PK time  — the requested slot in Pakistan time (Asia/Karachi, GMT+5)
+//
+// New param: `country`. See the caller change (booking.js) below — pass
+// `country: learner.country` so it works for BOTH inline and existing learners.
+// ═══════════════════════════════════════════════════════════
+
 export async function sendAdminTrialNotification({
   parentName,
   childName,
   parentEmail,
   phone,
+  country,            // ← NEW
   courseLabel,
   studentTimezone,
   genderPreference,
   dateDisplay,
-  timeDisplay,
-  studentId
+  timeDisplay,        // UTC ISO string of the slot start
+  studentId,
 }) {
   const rawEmails = process.env.ADMIN_NOTIFICATION_EMAILS || '';
   const adminEmails = rawEmails
@@ -361,34 +520,53 @@ export async function sendAdminTrialNotification({
   const start = new Date(timeDisplay);
   const end   = new Date(start.getTime() + 30 * 60 * 1000);
 
+  // ── Student-timezone display (unchanged behaviour) ──
   const timeStart = start.toLocaleTimeString('en-GB', {
     timeZone: studentTimezone,
     hour:     '2-digit',
     minute:   '2-digit',
   });
-
   const timeEnd = end.toLocaleTimeString('en-GB', {
     timeZone: studentTimezone,
     hour:     '2-digit',
     minute:   '2-digit',
   });
-
-  // Get timezone abbreviation e.g. "BST", "EST"
+  // Timezone abbreviation e.g. "BST", "EST"
   const tzAbbr = start.toLocaleTimeString('en-GB', {
     timeZone:     studentTimezone,
     timeZoneName: 'short',
   }).split(' ').pop();
 
   const newDateDisplay = start.toLocaleDateString('en-GB', {
-    timeZone: studentTimezone,
-    timeZoneName: "short",
-    weekday:  'long',
-    year:     'numeric',
-    month:    'long',
-    day:      'numeric',
+    timeZone:     studentTimezone,
+    timeZoneName: 'short',
+    weekday:      'long',
+    year:         'numeric',
+    month:        'long',
+    day:          'numeric',
   });
 
   const newTimeDisplay = `${timeStart} – ${timeEnd} (${tzAbbr})`;
+
+  // ── Pakistan-time display (Asia/Karachi, fixed GMT+5, no DST) ──
+  const pkStart = start.toLocaleTimeString('en-GB', {
+    timeZone: 'Asia/Karachi',
+    hour:     '2-digit',
+    minute:   '2-digit',
+  });
+  const pkEnd = end.toLocaleTimeString('en-GB', {
+    timeZone: 'Asia/Karachi',
+    hour:     '2-digit',
+    minute:   '2-digit',
+  });
+  const pkDate = start.toLocaleDateString('en-GB', {
+    timeZone: 'Asia/Karachi',
+    weekday:  'short',
+    day:      'numeric',
+    month:    'short',
+  });
+  // e.g. "Wed, 8 Jul · 6:00 pm – 6:30 pm (PKT, GMT+5)"
+  const pkTimeDisplay = `${pkDate} · ${pkStart} – ${pkEnd} (PKT, GMT+5)`;
 
   const genderLabel = {
     MALE:          'Male teacher preferred',
@@ -423,10 +601,12 @@ export async function sendAdminTrialNotification({
           ['Child Name',         childName],
           ['Email',              parentEmail],
           ['Phone / WhatsApp',   phone || '—'],
+          ['Country',            country || '—'],
           ['Course Interest',    courseLabel],
           ['Teacher Preference', genderLabel],
           ['Requested Date',     newDateDisplay],
           ['Requested Time',     newTimeDisplay],
+          ['Your Time (PKT)',    pkTimeDisplay],
         ].map(([label, value], i) => `
           <tr>
             <td style="padding:10px 14px;background:${i%2===0?'#f7f9fb':'#ffffff'};border:1px solid #e2e8f0;font-size:12px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.04em;width:36%;">
@@ -457,27 +637,15 @@ export async function sendAdminTrialNotification({
 </body>
 </html>`;
 
-  // const { error } = await resend.emails.send({
-  //   from:    'Quran Odyssey <bookings@quranodyssey.com>',
-  //   to:      adminEmails,
-  //   subject: `New Trial Booking — ${childName} | ${dateDisplay} at ${timeDisplay}`,
-  //   html,
-  // });
-
-  // if (error) throw new Error(`Admin notification failed: ${JSON.stringify(error)}`);
-  // console.log(`✅ Admin trial notification sent to: ${adminEmails.join(', ')}`);
-
   return sendAndLog({
-    type:        'ADMIN_TRIAL_NOTIFICATION',   // see table below
-    to: adminEmails,
-    subject:     `New Trial Booking — ${childName} | ${dateDisplay} at ${timeDisplay}`,                          // same subject string as before
+    type:        'ADMIN_TRIAL_NOTIFICATION',
+    to:          adminEmails,
+    subject:     `New Trial Booking — ${childName} | ${dateDisplay} at ${timeDisplay}`,
     html,
-    from:        'Quran Odyssey <bookings@quranodyssey.com>',  // keep this sender's from
-    relatedType: 'Student',                       // see table (or omit)
-    relatedId:   studentId,                       // see table (or omit)
+    from:        'Quran Odyssey <bookings@quranodyssey.com>',
+    relatedType: 'Student',
+    relatedId:   studentId,
   });
-
-
 }
 
 // ─── Lead confirmation email to client ───────────────────────────────

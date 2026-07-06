@@ -177,6 +177,7 @@ router.get("/", async (req, res) => {
       requestsForConversion, // enrollment requests last 90d (status)
       studentsForRegion, // students w/ country
       recentAudit, // activity feed
+      failedComms
     ] = await Promise.all([
       prisma.enrollmentRequest.count({ where: { status: "PENDING" } }),
       prisma.trialBooking.count({
@@ -203,6 +204,9 @@ router.get("/", async (req, res) => {
       }),
       prisma.student.findMany({ select: { country: true } }),
       prisma.auditLog.findMany({ orderBy: { createdAt: "desc" }, take: 12 }),
+
+      // Unresolved failed communications (for the dashboard attention card)
+      prisma.communicationLog.count({ where: { status: "FAILED", resolvedAt: null } }),
     ]);
 
     // ── Enrollments-over-time (group by month, last ~3 months) ──
@@ -259,6 +263,7 @@ router.get("/", async (req, res) => {
         todaySessions: todaySessionsCount,
         draftReports,
         newLeads,
+        failedComms
       },
       totals: {
         accounts: totalAccounts,

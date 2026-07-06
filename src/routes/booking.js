@@ -384,6 +384,7 @@ router.post('/trial', requireAuth, requireContactDetails, async (req, res) => {
         childName:        learner.name,
         parentEmail:      learner.account.email,
         phone:            learner.account.phone || null,
+        country:          learner.country,        
         courseLabel,
         genderPreference: cleanGender,
         studentTimezone: userTimezone,
