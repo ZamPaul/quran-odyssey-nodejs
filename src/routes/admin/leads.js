@@ -1,171 +1,160 @@
-// src/routes/admin/communications.js  (NEW)
+// src/routes/admin/leads.js  (NEW)
 //
-// The communications log: searchable/filterable list, single view,
-// retry (re-fire stored payload), resend-with-edit, failure count for the
-// nav badge, and dismiss (mark a failure resolved without resending).
+// The lead pipeline: list/filter, per-lead status + notes, and the
+// legitimate conversion link — detect the User account a lead became
+// (by email match) and let the admin confirm-link it (status → CONVERTED,
+// convertedUserId set). Conversion is admin-verified, not guessed.
 //
 // Mount in src/routes/admin/index.js:
-//   import commsRouter from './communications.js';
-//   router.use('/communications', commsRouter);
+//   import leadsRouter from './leads.js';
+//   router.use('/leads', leadsRouter);
 
 import express from "express";
 import { prisma } from "../../lib/prisma.js";
 import { logAudit } from "../../lib/audit.js";
-import { resendRendered } from "../../services/email.js";
 
 const router = express.Router();
 
-const VALID_STATUS = ["SENT", "FAILED"];
-const VALID_TYPES = [
-  "LEAD_CONFIRMATION","ADMIN_LEAD_NOTIFICATION","TRIAL_BOOKING_CONFIRMATION",
-  "ADMIN_TRIAL_NOTIFICATION","ENROLLMENT_ADMIN_NOTIFICATION","ENROLLMENT_APPROVED",
-  "ENROLLMENT_REJECTED","PROGRESS_REPORT","TEACHER_DUTIES_REMINDER","OTHER",
-];
+const LEAD_STATUSES = ["NEW", "CONTACTED", "BOOKED", "CONVERTED", "LOST"];
 
 // ─────────────────────────────────────────────────────────
-// GET /  — list with filters + pagination
-// ?status= &type= &q= (recipient/subject) &from= &to= &page= &pageSize=
-// Failures float first by default.
+// GET /  — pipeline list. ?status= &q= &page= &pageSize=
+// Also returns per-status counts for the pipeline columns/summary.
 // ─────────────────────────────────────────────────────────
 router.get("/", async (req, res) => {
-  const { status, type, q, from, to, page = "1", pageSize = "25" } = req.query;
-  const take = Math.min(parseInt(pageSize, 10) || 25, 100);
+  const { status, q, page = "1", pageSize = "50" } = req.query;
+  const take = Math.min(parseInt(pageSize, 10) || 50, 200);
   const skip = (Math.max(parseInt(page, 10) || 1, 1) - 1) * take;
 
   const where = {};
-  if (status && VALID_STATUS.includes(status)) where.status = status;
-  if (type && VALID_TYPES.includes(type)) where.type = type;
-  if (from || to) {
-    where.createdAt = {};
-    if (from) where.createdAt.gte = new Date(from);
-    if (to) where.createdAt.lte = new Date(to);
-  }
+  if (status && LEAD_STATUSES.includes(status)) where.status = status;
   if (q && q.trim()) {
     where.OR = [
-      { toAddress: { contains: q.trim(), mode: "insensitive" } },
-      { subject: { contains: q.trim(), mode: "insensitive" } },
+      { firstName: { contains: q.trim(), mode: "insensitive" } },
+      { lastName: { contains: q.trim(), mode: "insensitive" } },
+      { email: { contains: q.trim(), mode: "insensitive" } },
+      { phone: { contains: q.trim(), mode: "insensitive" } },
     ];
   }
 
   try {
-    const [rows, total, failedUnresolved] = await Promise.all([
-      prisma.communicationLog.findMany({
-        where,
-        orderBy: [{ status: "asc" }, { createdAt: "desc" }], // FAILED (< SENT alphabetically) first
-        skip, take,
-        select: {
-          id: true, channel: true, type: true, status: true, toAddress: true, subject: true,
-          providerId: true, failureReason: true, failureCode: true, relatedType: true, relatedId: true,
-          resendOfId: true, resolvedAt: true, createdAt: true,
-        },
-      }),
-      prisma.communicationLog.count({ where }),
-      prisma.communicationLog.count({ where: { status: "FAILED", resolvedAt: null } }),
+    const [leads, total, statusCounts] = await Promise.all([
+      prisma.trialLead.findMany({ where, orderBy: { createdAt: "desc" }, skip, take }),
+      prisma.trialLead.count({ where }),
+      prisma.trialLead.groupBy({ by: ["status"], _count: { _all: true } }),
     ]);
-    return res.json({ rows, total, page: parseInt(page, 10) || 1, pageSize: take, failedUnresolved });
+    const counts = Object.fromEntries(LEAD_STATUSES.map(s => [s, 0]));
+    for (const g of statusCounts) counts[g.status] = g._count._all;
+    return res.json({ leads, total, page: parseInt(page, 10) || 1, pageSize: take, counts });
   } catch (err) {
-    console.error("Comms list failed:", err);
-    return res.status(500).json({ error: "Failed to load communications" });
+    console.error("Leads list failed:", err);
+    return res.status(500).json({ error: "Failed to load leads" });
   }
 });
 
 // ─────────────────────────────────────────────────────────
-// GET /failure-count — for the nav badge (unresolved failures)
-// ─────────────────────────────────────────────────────────
-router.get("/failure-count", async (_req, res) => {
-  try {
-    const failed = await prisma.communicationLog.count({ where: { status: "FAILED", resolvedAt: null } });
-    return res.json({ failed });
-  } catch (err) {
-    return res.status(500).json({ error: "Failed" });
-  }
-});
-
-// ─────────────────────────────────────────────────────────
-// GET /:id — single log row incl. the html body (for view / edit-before-resend)
+// GET /:id — single lead + conversion detection.
+// Detects a User whose email matches the lead, and surfaces their
+// enrollment count so the admin can verify a real conversion.
 // ─────────────────────────────────────────────────────────
 router.get("/:id", async (req, res) => {
   try {
-    const row = await prisma.communicationLog.findUnique({ where: { id: req.params.id } });
-    if (!row) return res.status(404).json({ error: "Not found" });
-    return res.json({ row });
+    const lead = await prisma.trialLead.findUnique({
+      where: { id: req.params.id },
+      include: { convertedUser: { select: { id: true, email: true, name: true } } },
+    });
+    if (!lead) return res.status(404).json({ error: "Not found" });
+
+    // Candidate match: a User with the same email (case-insensitive)
+    let candidate = null;
+    if (!lead.convertedUserId) {
+      const user = await prisma.user.findFirst({
+        where: { email: { equals: lead.email, mode: "insensitive" } },
+        select: { id: true, email: true, name: true, managedStudents: { select: { id: true } } },
+      });
+      if (user) {
+        const studentIds = user.managedStudents.map(s => s.id);
+        const activeEnrollments = studentIds.length
+          ? await prisma.enrollment.count({ where: { studentId: { in: studentIds }, status: "ACTIVE" } })
+          : 0;
+        candidate = { userId: user.id, email: user.email, name: user.name, studentCount: studentIds.length, activeEnrollments };
+      }
+    }
+
+    return res.json({ lead, candidate });
   } catch (err) {
-    return res.status(500).json({ error: "Failed to load" });
+    console.error("Lead detail failed:", err);
+    return res.status(500).json({ error: "Failed to load lead" });
   }
 });
 
 // ─────────────────────────────────────────────────────────
-// POST /:id/retry — re-fire the stored payload AS-IS
+// PATCH /:id — update status and/or notes
 // ─────────────────────────────────────────────────────────
-router.post("/:id/retry", async (req, res) => {
+router.patch("/:id", async (req, res) => {
+  const { status, notes } = req.body;
+  const data = {};
+  if (status !== undefined) {
+    if (!LEAD_STATUSES.includes(status)) return res.status(400).json({ error: "Invalid status" });
+    data.status = status;
+  }
+  if (notes !== undefined) data.notes = notes;
+  if (Object.keys(data).length === 0) return res.status(400).json({ error: "Nothing to update" });
+
   try {
-    const orig = await prisma.communicationLog.findUnique({ where: { id: req.params.id } });
-    if (!orig) return res.status(404).json({ error: "Not found" });
-    if (!orig.html) return res.status(400).json({ error: "No stored body to retry (older row)." });
-
-    const result = await resendRendered({
-      to: orig.toAddress.split(",").map(s => s.trim()),
-      subject: orig.subject, html: orig.html, from: orig.fromAddress,
-      type: orig.type, relatedType: orig.relatedType, relatedId: orig.relatedId,
-      resendOfId: orig.id,
-    });
-
+    const lead = await prisma.trialLead.update({ where: { id: req.params.id }, data });
     await logAudit(req, {
-      action: "comms.retry", targetType: "CommunicationLog", targetId: orig.id,
-      targetLabel: orig.toAddress, metadata: { success: result.success, failureReason: result.failureReason || null },
+      action: "lead.update", targetType: "TrialLead", targetId: lead.id,
+      targetLabel: `${lead.firstName} ${lead.lastName}`,
+      metadata: { status: data.status || undefined, notesChanged: data.notes !== undefined },
     });
-
-    return res.json({ success: result.success, failureReason: result.failureReason, newLogId: result.logId });
+    return res.json({ lead });
   } catch (err) {
-    console.error("Retry failed:", err);
-    return res.status(500).json({ error: "Retry failed" });
+    console.error("Lead update failed:", err);
+    return res.status(500).json({ error: "Failed to update lead" });
   }
 });
 
 // ─────────────────────────────────────────────────────────
-// POST /:id/resend — resend WITH EDITS  Body: { to, subject, html }
+// POST /:id/link — confirm the conversion link to a User account.
+// Body: { userId }.  Sets convertedUserId and status → CONVERTED.
+// Admin-verified (they saw the matched account + its enrollments first).
 // ─────────────────────────────────────────────────────────
-router.post("/:id/resend", async (req, res) => {
-  const { to, subject, html } = req.body;
-  if (!to || !subject || !html) return res.status(400).json({ error: "to, subject and html are required" });
+router.post("/:id/link", async (req, res) => {
+  const { userId } = req.body;
+  if (!userId) return res.status(400).json({ error: "userId is required" });
   try {
-    const orig = await prisma.communicationLog.findUnique({ where: { id: req.params.id } });
-    if (!orig) return res.status(404).json({ error: "Not found" });
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true } });
+    if (!user) return res.status(404).json({ error: "Account not found" });
 
-    const result = await resendRendered({
-      to: Array.isArray(to) ? to : to.split(",").map(s => s.trim()),
-      subject, html, from: orig.fromAddress,
-      type: orig.type, relatedType: orig.relatedType, relatedId: orig.relatedId,
-      resendOfId: orig.id,
+    const lead = await prisma.trialLead.update({
+      where: { id: req.params.id },
+      data: { convertedUserId: userId, status: "CONVERTED" },
     });
-
     await logAudit(req, {
-      action: "comms.resendEdited", targetType: "CommunicationLog", targetId: orig.id,
-      targetLabel: Array.isArray(to) ? to.join(", ") : to,
-      metadata: { success: result.success, edited: true, failureReason: result.failureReason || null },
+      action: "lead.convert", targetType: "TrialLead", targetId: lead.id,
+      targetLabel: `${lead.firstName} ${lead.lastName}`, metadata: { linkedUser: user.email },
     });
-
-    return res.json({ success: result.success, failureReason: result.failureReason, newLogId: result.logId });
+    return res.json({ lead });
   } catch (err) {
-    console.error("Resend failed:", err);
-    return res.status(500).json({ error: "Resend failed" });
+    console.error("Lead link failed:", err);
+    return res.status(500).json({ error: "Failed to link lead" });
   }
 });
 
 // ─────────────────────────────────────────────────────────
-// POST /:id/dismiss — mark a FAILED row resolved without resending
-// (e.g. the recipient was contacted another way, or it's a dud address)
+// POST /:id/unlink — undo a conversion link (mistake correction)
 // ─────────────────────────────────────────────────────────
-router.post("/:id/dismiss", async (req, res) => {
+router.post("/:id/unlink", async (req, res) => {
   try {
-    const row = await prisma.communicationLog.findUnique({ where: { id: req.params.id } });
-    if (!row) return res.status(404).json({ error: "Not found" });
-    if (row.status !== "FAILED") return res.status(400).json({ error: "Only failed items can be dismissed." });
-    await prisma.communicationLog.update({ where: { id: row.id }, data: { resolvedAt: new Date() } });
-    await logAudit(req, { action: "comms.dismiss", targetType: "CommunicationLog", targetId: row.id, targetLabel: row.toAddress });
-    return res.json({ dismissed: true });
+    const lead = await prisma.trialLead.update({
+      where: { id: req.params.id },
+      data: { convertedUserId: null, status: "CONTACTED" },
+    });
+    await logAudit(req, { action: "lead.unlink", targetType: "TrialLead", targetId: lead.id, targetLabel: `${lead.firstName} ${lead.lastName}` });
+    return res.json({ lead });
   } catch (err) {
-    return res.status(500).json({ error: "Failed to dismiss" });
+    return res.status(500).json({ error: "Failed to unlink" });
   }
 });
 

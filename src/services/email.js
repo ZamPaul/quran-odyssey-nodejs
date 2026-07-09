@@ -765,6 +765,12 @@ export async function sendLeadConfirmationEmail({ to, firstName, leadId }) {
 
 // ─── Admin notification email to admins ──────────────────────────────
 export async function sendAdminLeadNotification({ firstName, lastName, email, phone, leadId }) {
+  const rawEmails = process.env.ADMIN_NOTIFICATION_EMAILS || '';
+  const adminEmails = rawEmails
+    .split(',')
+    .map(e => e.trim())
+    .filter(Boolean);
+
   const html = `
 <!DOCTYPE html>
 <html lang="en">
@@ -835,7 +841,7 @@ export async function sendAdminLeadNotification({ firstName, lastName, email, ph
 
   return sendAndLog({
     type:        'ADMIN_LEAD_NOTIFICATION',   // see table below
-    to: ['zamielpaul@gmail.com', 'irhaasif@gmail.com', 'waqarbasit61@gmail.com', 'mahilmalik23@gmail.com'],
+    to: adminEmails,
     subject:     '🔔 New Trial Lead: ${firstName} ${lastName}',                          // same subject string as before
     html,
     from:        'Quran Odyssey <bookings@quranodyssey.com>',  // keep this sender's from
