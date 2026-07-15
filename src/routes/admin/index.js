@@ -60,7 +60,16 @@ router.use('/students', studentsRouter);
 router.use('/teachers', teachersRouter);
 router.use('/enrollment-requests', requestsRouter);
 router.use('/trials', trialsRouter);
-router.use('/sessions', sessionsRouter);
+
+router.use('/sessions', (req, res, next) => {
+  res.setTimeout(300000, () => {
+    if (!res.headersSent) {
+      res.status(408).json({ error: 'Request timeout' });
+    }
+  });
+  next();
+}, sessionsRouter);
+
 router.use('/oversight', oversightRouter);
 router.use('/communications', commsRouter);
 router.use('/leads', leadsRouter); 

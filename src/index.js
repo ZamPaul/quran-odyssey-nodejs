@@ -66,7 +66,7 @@ app.use('/webhooks', express.raw({ type: 'application/json' }));
 app.use(express.json({ limit: '200kb' }));
 
 // ── Request timeout ────────────────────────────────────────
-// Any request that takes > 30 seconds is terminated
+// Any request that takes > 5 mns is terminated
 app.use((req, res, next) => {
   res.setTimeout(30000, () => {
     if (!res.headersSent) {

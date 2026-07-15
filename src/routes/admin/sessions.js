@@ -591,7 +591,11 @@ router.post("/bulk/commit", async (req, res) => {
           },
           select: { id: true, scheduledAt: true },
         })
-      )
+      ),
+      {
+        maxWait: 5000, // Time allowed to acquire a connection (default 2s)
+        timeout: 300000 // Extended execution limit to 5 mns (default 5s)
+      }
     );
  
     await logAudit(req, {
