@@ -57,7 +57,16 @@ router.get("/ping", (req, res) => {
 router.use('/dashboard', dashboardRouter);
 router.use('/accounts', accountsRouter);
 router.use('/students', studentsRouter);
-router.use('/teachers', teachersRouter);
+
+router.use('/teachers', (req, res, next) => {
+  res.setTimeout(300000, () => {
+    if (!res.headersSent) {
+      res.status(408).json({ error: 'Request timeout' });
+    }
+  });
+  next();
+}, teachersRouter);
+
 router.use('/enrollment-requests', requestsRouter);
 router.use('/trials', trialsRouter);
 
