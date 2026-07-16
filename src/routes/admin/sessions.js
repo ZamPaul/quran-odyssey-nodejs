@@ -495,7 +495,8 @@ async function buildBulkPlan(body) {
     where: {
       status: { in: ["SCHEDULED", "COMPLETED"] },
       scheduledAt: { gte: new Date(rangeStart.getTime() - 86400000), lte: new Date(rangeEnd.getTime() + 86400000) },
-      OR: [{ studentId: enrollment.student.id }, { teacherId: enrollment.teacher.id }],
+      // OR: [{ studentId: enrollment.student.id }, { teacherId: enrollment.teacher.id }],
+      OR: [{ studentId: enrollment.student.id }],
     },
     select: { id: true, studentId: true, teacherId: true, scheduledAt: true, durationMins: true },
   });
