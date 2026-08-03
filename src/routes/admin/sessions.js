@@ -453,10 +453,43 @@ router.get("/meta/enrollments", async (req, res) => {
     return res.status(500).json({ error: "Failed to load enrollments" });
   }
 });
+
+const WD_NAMES = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+
+// An unvalidated zone string thrown at Intl throws a RangeError → 500.
+// Never pass request input to Intl without this guard.
+function isValidTimeZone(tz) {
+  if (typeof tz !== "string" || !tz.trim()) return false;
+  try { new Intl.DateTimeFormat("en-US", { timeZone: tz }); return true; }
+  catch { return false; }
+}
+
+// If sessions are anchored to the ADMIN's zone and the student's zone observes
+// DST differently, the student's wall-clock time shifts mid-series. Detect it
+// and warn — the admin cannot see this from their own clock.
+function studentShiftWarning(occ, studentTz, adminTz) {
+  if (!studentTz || studentTz === adminTz) return null;
+  const fmt = new Intl.DateTimeFormat("en-GB", {
+    timeZone: studentTz, hour12: false, hour: "2-digit", minute: "2-digit",
+  });
+  const byWeekday = new Map();
+  for (const o of occ) {
+    if (o.blackout) continue;
+    const hhmm = fmt.format(o.startUtc);
+    if (!byWeekday.has(o.weekday)) byWeekday.set(o.weekday, new Set());
+    byWeekday.get(o.weekday).add(hhmm);
+  }
+  const shifting = [...byWeekday.entries()].filter(([, s]) => s.size > 1);
+  if (shifting.length === 0) return null;
+  const detail = shifting
+    .map(([wd, s]) => `${WD_NAMES[wd]} ${[...s].sort().join(" → ")}`)
+    .join("; ");
+  return `Daylight saving: the student's local time changes part-way through this series (${detail}). Times are fixed in ${adminTz}.`;
+}
  
 // Shared: build + validate the config, generate occurrences, tag clashes.
 async function buildBulkPlan(body) {
-  const { enrollmentId, days, startDate, endDate, blackout } = body;
+  const { enrollmentId, days, startDate, endDate, blackout, timeZone: bodyTimeZone } = body;
  
   if (!enrollmentId) throw { status: 400, msg: "enrollmentId is required" };
   if (!Array.isArray(days) || days.length === 0) throw { status: 400, msg: "Pick at least one weekday" };
@@ -478,13 +511,23 @@ async function buildBulkPlan(body) {
   });
   if (!enrollment) throw { status: 404, msg: "Enrollment not found" };
  
-  const timeZone = enrollment.student.timezone || "UTC";
+  // const timeZone = enrollment.student.timezone || "UTC";
+
+  // Admin-anchored scheduling: the client sends the admin's IANA zone.
+  // Fall back to the student's zone if absent or invalid (older clients).
+  const studentTimeZone = enrollment.student.timezone || "UTC";
+  const timeZone = isValidTimeZone(bodyTimeZone) ? bodyTimeZone : studentTimeZone;
  
   // Generate the wall-clock-correct occurrences in the student's zone.
   const occ = generateOccurrences({ startDate, endDate, timeZone, days, blackout: blackout || [] });
  
+  // if (occ.length === 0) {
+  //   return { enrollment, timeZone, plan: [], summary: { total: 0, willCreate: 0, blackout: 0, conflict: 0 } };
+  // }
+
   if (occ.length === 0) {
-    return { enrollment, timeZone, plan: [], summary: { total: 0, willCreate: 0, blackout: 0, conflict: 0 } };
+    return { enrollment, timeZone, studentTimeZone, dstWarning: null,
+             plan: [], summary: { total: 0, willCreate: 0, blackout: 0, conflict: 0 } };
   }
  
   // Fetch existing sessions in range for BOTH this student and this teacher,
@@ -535,8 +578,11 @@ async function buildBulkPlan(body) {
     enrollment.sessionsPerWeek && chosenPerWeek !== enrollment.sessionsPerWeek
       ? `This enrolment is ${enrollment.sessionsPerWeek}×/week, but you selected ${chosenPerWeek} day(s).`
       : null;
+
+  const dstWarning = studentShiftWarning(occ, studentTimeZone, timeZone);
+  return { enrollment, timeZone, studentTimeZone, plan, summary, warning, dstWarning };
  
-  return { enrollment, timeZone, plan, summary, warning };
+  // return { enrollment, timeZone, plan, summary, warning };
 }
 
 // ─────────────────────────────────────────────────────────
@@ -547,9 +593,11 @@ async function buildBulkPlan(body) {
 // ─────────────────────────────────────────────────────────
 router.post("/bulk/preview", async (req, res) => {
   try {
-    const { enrollment, timeZone, plan, summary, warning } = await buildBulkPlan(req.body);
+    const { enrollment, timeZone, studentTimeZone, plan, summary, warning, dstWarning } = await buildBulkPlan(req.body);
     return res.json({
       timeZone,
+      studentTimeZone,
+      dstWarning,
       student: { id: enrollment.student.id, name: enrollment.student.name },
       teacher: { id: enrollment.teacher.id, name: enrollment.teacher.name },
       courseType: enrollment.courseType,
@@ -571,7 +619,7 @@ router.post("/bulk/preview", async (req, res) => {
 // ─────────────────────────────────────────────────────────
 router.post("/bulk/commit", async (req, res) => {
   try {
-    const { enrollment, plan, summary, warning } = await buildBulkPlan(req.body);
+    const { enrollment, timeZone, studentTimeZone, plan, summary, warning, dstWarning } = await buildBulkPlan(req.body);
     const toCreate = plan.filter((p) => p.status === "ok");
     if (toCreate.length === 0) {
       return res.status(409).json({ error: "Nothing to create — all occurrences were blackout or conflicts.", summary });
@@ -602,7 +650,7 @@ router.post("/bulk/commit", async (req, res) => {
     await logAudit(req, {
       action: "session.bulkCreate", targetType: "Enrollment", targetId: enrollment.id,
       targetLabel: enrollment.student.name,
-      metadata: { created: created.length, skipped: summary.total - created.length, teacher: enrollment.teacher.name },
+      metadata: { created: created.length, skipped: summary.total - created.length, teacher: enrollment.teacher.name, timeZone },
     });
  
     return res.status(201).json({

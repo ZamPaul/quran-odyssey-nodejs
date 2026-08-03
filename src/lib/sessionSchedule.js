@@ -52,14 +52,14 @@ function parseTime(s) {
 }
 
 /**
- * Generate session occurrences (student's timezone drives wall-clock).
+ * * Generate session occurrences in the supplied timeZone (admin-anchored for admin bulk creation).
  * cfg: { startDate:'YYYY-MM-DD', endDate:'YYYY-MM-DD', timeZone,
  *        days:[{ weekday:0-6, startTime:'HH:MM', durationMins }],
  *        blackout:['YYYY-MM-DD'] }
  * → [{ dateISO, weekday, startUtc:Date, endUtc:Date, durationMins, blackout:bool }]
  */
 export function generateOccurrences(cfg) {
-  const { startDate, endDate, timeZone, days, blackout = [] } = cfg;
+  const { startDate, endDate, timeZone, days, blackout = [] } = cfg; 
   const byWeekday = new Map();
   for (const d of days) byWeekday.set(Number(d.weekday), d);
   const blackoutSet = new Set(blackout);
