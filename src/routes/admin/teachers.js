@@ -46,6 +46,7 @@ router.get("/", async (req, res) => {
         rating: true,
         isActive: true,
         userId: true,
+        country: true,
         _count: { select: { enrollments: true, classSessions: true } },
       },
     });
@@ -65,6 +66,7 @@ router.get("/", async (req, res) => {
         linked: !!t.userId,
         enrollments: t._count.enrollments,
         sessions: t._count.classSessions,
+        country: t.country,
       })),
     });
   } catch (err) {
@@ -135,7 +137,9 @@ router.post("/", async (req, res) => {
     calendarId,
     bio,
     password,
+    country
   } = req.body;
+
 
   const missing = [];
   if (!email) missing.push("email");
@@ -206,6 +210,7 @@ router.post("/", async (req, res) => {
         email: email.trim(),
         specialty: specialtyArr,
         timezone: timezone.trim(),
+        country: country?.trim() || null,
         gender: gender.trim(),
         calendarId: calendarId.trim(),
         bio: bio?.trim() || null,
@@ -239,8 +244,8 @@ router.post("/", async (req, res) => {
 // ═════════════════════════════════════════════════════════
 router.patch("/:id", async (req, res) => {
   const { id } = req.params;
-  const { name, specialty, timezone, gender, bio, rating, calendarId } =
-    req.body;
+
+  const { name, specialty, timezone, gender, bio, rating, calendarId, country } = req.body;
 
   try {
     const existing = await prisma.teacher.findUnique({ where: { id } });
@@ -253,6 +258,7 @@ router.patch("/:id", async (req, res) => {
         ? specialty
         : [specialty].filter(Boolean);
     if (timezone !== undefined) data.timezone = timezone.trim();
+    if (country !== undefined) data.country = country?.trim() || null;
     if (gender !== undefined) data.gender = gender.trim();
     if (bio !== undefined) data.bio = bio?.trim() || null;
     if (rating !== undefined) {

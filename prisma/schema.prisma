@@ -243,6 +243,7 @@ model Teacher {
   rating     Float    @default(0.0)
   isActive   Boolean  @default(true)
   calendarId String   @unique
+  country   String?    // nullable: existing teachers have none until backfilled
 
   // Module 2 — link to Clerk User (NEW)
   // Admin sets this after creating the teacher's Clerk account
