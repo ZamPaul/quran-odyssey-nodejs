@@ -21,7 +21,7 @@ import {
   computeStudentRisk,
   isReportOverdue,
   unmarkedCutoff,
-  OVERDUE_REPORT_DAYS,
+  OVERDUE_REPORT_DAYS
 } from "../../lib/oversight.js";
 import { sendTeacherDutiesReminder } from "../../services/email.js";
 
