@@ -15,6 +15,8 @@ import { createClerkClient } from "@clerk/backend";
 import { prisma } from "../../lib/prisma.js";
 import { logAudit } from "../../lib/audit.js";
 
+import { collectStudentManifest, collectAccountManifest, purgeArtifacts, manifestForAudit } from '../../services/purge.js';
+
 const router = express.Router();
 const clerk = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY });
 
@@ -175,6 +177,32 @@ router.get("/:id", async (req, res) => {
     return res.status(500).json({ error: "Failed to load account" });
   }
 });
+
+// GET /api/admin/accounts/:id/delete-impact
+// What exactly will be destroyed. A hard delete is irreversible — the admin
+// sees the blast radius before typing the confirmation.
+router.get("/:id/delete-impact", async (req, res) => {
+  try {
+    const manifest = await collectAccountManifest(req.params.id);
+    if (!manifest) return res.status(404).json({ error: "Account not found" });
+ 
+    const blockers = [];
+    if (manifest.role === "ADMIN") blockers.push("This is an administrator account.");
+    if (manifest.linkedTeacher) blockers.push(`This login belongs to teacher "${manifest.linkedTeacher.name}". Manage it from the Teachers panel.`);
+    if (req.user?.id === req.params.id) blockers.push("You cannot delete your own account.");
+ 
+    return res.json({
+      label: manifest.label,
+      counts: manifest.counts,
+      blockers,
+      canDelete: blockers.length === 0,
+    });
+  } catch (err) {
+    console.error("Account delete-impact failed:", err);
+    return res.status(500).json({ error: "Failed to calculate impact" });
+  }
+});
+ 
 
 // ═════════════════════════════════════════════════════════
 // POST /api/admin/accounts
@@ -406,57 +434,113 @@ router.patch("/:id/status", async (req, res) => {
 //
 // Requires ?confirm=true to avoid accidents.
 // ═════════════════════════════════════════════════════════
+
+// router.delete("/:id", async (req, res) => {
+//   const { id } = req.params;
+//   if (req.query.confirm !== "true") {
+//     return res
+//       .status(400)
+//       .json({ error: "Deletion must be confirmed (?confirm=true)" });
+//   }
+
+//   try {
+//     const existing = await prisma.user.findUnique({
+//       where: { id },
+//       select: {
+//         id: true,
+//         email: true,
+//         clerkId: true,
+//         role: true,
+//         _count: { select: { managedStudents: true } },
+//       },
+//     });
+//     if (!existing || !ACCOUNT_ROLES.includes(existing.role)) {
+//       return res.status(404).json({ error: "Account not found" });
+//     }
+
+//     // Audit BEFORE deletion (so we capture the label/metadata)
+//     await logAudit(req, {
+//       action: "account.delete",
+//       targetType: "User",
+//       targetId: id,
+//       targetLabel: existing.email,
+//       metadata: { studentsDeleted: existing._count.managedStudents },
+//     });
+
+//     // 1) Delete from Clerk (fires user.deleted webhook → DB cascade)
+//     if (existing.clerkId) {
+//       try {
+//         await clerk.users.deleteUser(existing.clerkId);
+//       } catch (e) {
+//         console.error("⚠️  Clerk delete failed (continuing):", e.message);
+//       }
+//     }
+
+//     // 2) Fallback: ensure the DB row is gone (idempotent if webhook beat us)
+//     try {
+//       await prisma.user.delete({ where: { id } });
+//     } catch (e) {
+//       if (e.code !== "P2025") throw e; /* already gone via webhook */
+//     }
+
+//     return res.json({ message: "Account and all associated data deleted" });
+//   } catch (err) {
+//     console.error("Account delete failed:", err);
+//     return res.status(500).json({ error: "Failed to delete account" });
+//   }
+// });
+
+
+// DELETE /api/admin/accounts/:id     Body: { confirmEmail }
 router.delete("/:id", async (req, res) => {
   const { id } = req.params;
-  if (req.query.confirm !== "true") {
-    return res
-      .status(400)
-      .json({ error: "Deletion must be confirmed (?confirm=true)" });
-  }
-
+  const { confirmEmail } = req.body || {};
   try {
-    const existing = await prisma.user.findUnique({
+    const user = await prisma.user.findUnique({
       where: { id },
-      select: {
-        id: true,
-        email: true,
-        clerkId: true,
-        role: true,
-        _count: { select: { managedStudents: true } },
-      },
+      select: { id: true, email: true, role: true, teacher: { select: { id: true, name: true } } },
     });
-    if (!existing || !ACCOUNT_ROLES.includes(existing.role)) {
-      return res.status(404).json({ error: "Account not found" });
+    if (!user) return res.status(404).json({ error: "Account not found" });
+    if (user.role === "ADMIN") return res.status(403).json({ error: "Administrator accounts cannot be deleted here." });
+    if (req.user?.id === id) return res.status(403).json({ error: "You cannot delete your own account." });
+    if (user.teacher) {
+      return res.status(409).json({
+        error: `This login belongs to teacher "${user.teacher.name}". Deactivate or remove them from the Teachers panel instead.`,
+      });
     }
-
-    // Audit BEFORE deletion (so we capture the label/metadata)
+    if (confirmEmail !== user.email) {
+      return res.status(400).json({ error: "Confirmation email does not match. Delete aborted." });
+    }
+ 
+    // 1. Manifest BEFORE the delete — afterwards the rows are gone.
+    const manifest = await collectAccountManifest(id);
+ 
+    // 2. Database delete. Cascade removes learners and everything they own.
+    await prisma.user.delete({ where: { id } });
+ 
+    // 3. Purge external artifacts (never throws).
+    const purge = await purgeArtifacts(manifest, { deleteClerk: true });
+ 
     await logAudit(req, {
       action: "account.delete",
       targetType: "User",
       targetId: id,
-      targetLabel: existing.email,
-      metadata: { studentsDeleted: existing._count.managedStudents },
+      targetLabel: user.email,
+      metadata: manifestForAudit(manifest, purge),
     });
-
-    // 1) Delete from Clerk (fires user.deleted webhook → DB cascade)
-    if (existing.clerkId) {
-      try {
-        await clerk.users.deleteUser(existing.clerkId);
-      } catch (e) {
-        console.error("⚠️  Clerk delete failed (continuing):", e.message);
-      }
+ 
+    if (!purge.ok) {
+      console.error(`⚠️  Account ${user.email} deleted, but ${purge.failures.length} artifact(s) failed to purge.`);
     }
-
-    // 2) Fallback: ensure the DB row is gone (idempotent if webhook beat us)
-    try {
-      await prisma.user.delete({ where: { id } });
-    } catch (e) {
-      if (e.code !== "P2025") throw e; /* already gone via webhook */
-    }
-
-    return res.json({ message: "Account and all associated data deleted" });
+    return res.json({ deleted: true, counts: manifest.counts, purge });
   } catch (err) {
     console.error("Account delete failed:", err);
+    if (err.code === "P2003") {
+      return res.status(409).json({
+        error: "A foreign key still blocks this delete. Apply the cascade migration (cas_02) first.",
+        constraint: err.meta?.constraint || err.meta?.field_name || undefined,
+      });
+    }
     return res.status(500).json({ error: "Failed to delete account" });
   }
 });

@@ -155,9 +155,6 @@ model User {
 
   convertedLeads  TrialLead[] @relation("LeadConversions")
 
-  deletedAt DateTime?   // soft-delete marker (null = live)
-  @@index([deletedAt])
-
   @@map("users")
 }
 
@@ -221,9 +218,6 @@ model Student {
   progressReports       ProgressReport[]       @relation("StudentReports")
   attendanceRecords     AttendanceRecord[]     @relation("StudentAttendance")
 
-  deletedAt DateTime?   // soft-delete marker (null = live)
-  @@index([deletedAt])
-
   @@index([accountId])
   @@map("students")
 }
@@ -248,7 +242,7 @@ model Teacher {
   // Module 2 — link to Clerk User (NEW)
   // Admin sets this after creating the teacher's Clerk account
   userId String? @unique
-  user   User?   @relation("TeacherUser", fields: [userId], references: [id])
+  user User? @relation("TeacherUser", fields: [userId], references: [id], onDelete: SetNull)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -286,7 +280,7 @@ model TrialBooking {
   updatedAt        DateTime       @updatedAt
 
   student Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  teacher Teacher? @relation(fields: [teacherId], references: [id])
+  teacher Teacher? @relation(fields: [teacherId], references: [id], onDelete: SetNull)
 
   classSession ClassSession?
 
@@ -328,18 +322,14 @@ model ClassSession {
   id String @id @default(cuid())
 
   teacherId String
-  teacher   Teacher @relation("TeacherSessions", fields: [teacherId], references: [id])
 
   studentId String
-  student   Student   @relation("StudentSessions", fields: [studentId], references: [id])
 
   // Optional links — a session can belong to an enrollment or be a standalone trial
   enrollmentId String?
-  enrollment   Enrollment? @relation(fields: [enrollmentId], references: [id])
 
   // If this session originated from a trial booking
   trialBookingId String?       @unique
-  trialBooking   TrialBooking? @relation(fields: [trialBookingId], references: [id])
 
   courseType   CourseInterest
   scheduledAt  DateTime
@@ -350,6 +340,11 @@ model ClassSession {
   calEventId   String?
 
   // Back-relation
+  teacher      Teacher       @relation("TeacherSessions", fields: [teacherId], references: [id], onDelete: Restrict)
+  student      Student       @relation("StudentSessions", fields: [studentId], references: [id], onDelete: Cascade)
+  enrollment   Enrollment?   @relation(fields: [enrollmentId], references: [id], onDelete: SetNull)
+  trialBooking TrialBooking? @relation(fields: [trialBookingId], references: [id], onDelete: SetNull)
+
   attendance AttendanceRecord?
 
   createdAt DateTime @default(now())
@@ -369,7 +364,7 @@ model Enrollment {
   student   Student @relation("StudentEnrollments", fields: [studentId], references: [id], onDelete: Cascade)
 
   teacherId String
-  teacher   Teacher @relation("TeacherEnrollments", fields: [teacherId], references: [id])
+  teacher Teacher @relation("TeacherEnrollments", fields: [teacherId], references: [id], onDelete: Restrict)
 
   courseType      CourseInterest
   startDate       DateTime         @default(now())
@@ -413,9 +408,9 @@ model Assignment {
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
 
-  teacher    Teacher               @relation("TeacherAssignments", fields: [teacherId], references: [id])
-  student    Student                  @relation("StudentAssignments", fields: [studentId], references: [id])
-  enrollment Enrollment?           @relation(fields: [enrollmentId], references: [id])
+  teacher    Teacher     @relation("TeacherAssignments", fields: [teacherId], references: [id], onDelete: Restrict)
+  student    Student     @relation("StudentAssignments", fields: [studentId], references: [id], onDelete: Cascade)
+  enrollment Enrollment? @relation(fields: [enrollmentId], references: [id], onDelete: SetNull)
   submission AssignmentSubmission?
 
   @@index([teacherId])
@@ -444,7 +439,7 @@ model AssignmentSubmission {
   gradedAt     DateTime?
 
   assignment Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
-  student    Student       @relation(fields: [studentId], references: [id])
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
 }
 
 // ─────────────────────────────────────────────────────────
@@ -481,9 +476,9 @@ model ProgressReport {
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
-  teacher    Teacher     @relation("TeacherReports", fields: [teacherId], references: [id])
-  student    Student        @relation("StudentReports", fields: [studentId], references: [id])
-  enrollment Enrollment? @relation(fields: [enrollmentId], references: [id])
+  teacher    Teacher     @relation("TeacherReports", fields: [teacherId], references: [id], onDelete: Restrict)
+  student    Student     @relation("StudentReports", fields: [studentId], references: [id], onDelete: Cascade)
+  enrollment Enrollment? @relation(fields: [enrollmentId], references: [id], onDelete: SetNull)
 
   @@index([teacherId])
   @@index([studentId])
@@ -504,10 +499,10 @@ model AttendanceRecord {
   markedAt     DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
 
-  teacher    Teacher      @relation("TeacherAttendanceRecords", fields: [teacherId], references: [id])
-  student    Student         @relation("StudentAttendance", fields: [studentId], references: [id])
   session    ClassSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  enrollment Enrollment?  @relation(fields: [enrollmentId], references: [id])
+  teacher    Teacher      @relation("TeacherAttendanceRecords", fields: [teacherId], references: [id], onDelete: Restrict)
+  student    Student      @relation("StudentAttendance", fields: [studentId], references: [id], onDelete: Cascade)
+  enrollment Enrollment?  @relation(fields: [enrollmentId], references: [id], onDelete: SetNull)
 
   @@index([teacherId])
   @@index([studentId])

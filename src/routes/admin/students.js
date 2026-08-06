@@ -20,6 +20,8 @@ import {
   DuplicateEnrollmentError,
 } from "../../lib/enrollmentGuard.js";
 
+import { collectStudentManifest, collectAccountManifest, purgeArtifacts, manifestForAudit } from '../../services/purge.js';
+
 const router = express.Router();
 
 const VALID_COURSES = [
@@ -199,6 +201,18 @@ router.get("/:id", async (req, res) => {
   } catch (err) {
     console.error("Student detail failed:", err);
     return res.status(500).json({ error: "Failed to load student" });
+  }
+});
+
+// GET /api/admin/students/:id/delete-impact
+router.get("/:id/delete-impact", async (req, res) => {
+  try {
+    const manifest = await collectStudentManifest(req.params.id);
+    if (!manifest) return res.status(404).json({ error: "Learner not found" });
+    return res.json({ label: manifest.label, counts: manifest.counts, blockers: [], canDelete: true });
+  } catch (err) {
+    console.error("Student delete-impact failed:", err);
+    return res.status(500).json({ error: "Failed to calculate impact" });
   }
 });
 
@@ -540,34 +554,77 @@ router.get("/meta/accounts", async (req, res) => {
 // DELETE /api/admin/students/:id?confirm=true
 // Hard delete the learner (cascades to their learning data).
 // ═════════════════════════════════════════════════════════
+
+// router.delete("/:id", async (req, res) => {
+//   const { id } = req.params;
+//   if (req.query.confirm !== "true") {
+//     return res
+//       .status(400)
+//       .json({ error: "Deletion must be confirmed (?confirm=true)" });
+//   }
+
+//   try {
+//     const student = await prisma.student.findUnique({
+//       where: { id },
+//       select: { id: true, name: true, account: { select: { email: true } } },
+//     });
+//     if (!student) return res.status(404).json({ error: "Student not found" });
+
+//     await logAudit(req, {
+//       action: "student.delete",
+//       targetType: "Student",
+//       targetId: id,
+//       targetLabel: student.name,
+//       metadata: { account: student.account.email },
+//     });
+
+//     await prisma.student.delete({ where: { id } });
+//     return res.json({ message: "Student and all associated data deleted" });
+//   } catch (err) {
+//     console.error("Student delete failed:", err);
+//     return res.status(500).json({ error: "Failed to delete student" });
+//   }
+// });
+
+// DELETE /api/admin/students/:id     Body: { confirmName }
 router.delete("/:id", async (req, res) => {
   const { id } = req.params;
-  if (req.query.confirm !== "true") {
-    return res
-      .status(400)
-      .json({ error: "Deletion must be confirmed (?confirm=true)" });
-  }
-
+  const { confirmName } = req.body || {};
   try {
     const student = await prisma.student.findUnique({
       where: { id },
       select: { id: true, name: true, account: { select: { email: true } } },
     });
-    if (!student) return res.status(404).json({ error: "Student not found" });
-
+    if (!student) return res.status(404).json({ error: "Learner not found" });
+    if (confirmName !== student.name) {
+      return res.status(400).json({ error: "Confirmation name does not match. Delete aborted." });
+    }
+ 
+    const manifest = await collectStudentManifest(id);
+    await prisma.student.delete({ where: { id } });
+    const purge = await purgeArtifacts(manifest); // never touches Clerk — the parent account survives
+ 
     await logAudit(req, {
       action: "student.delete",
       targetType: "Student",
       targetId: id,
       targetLabel: student.name,
-      metadata: { account: student.account.email },
+      metadata: { account: student.account?.email, ...manifestForAudit(manifest, purge) },
     });
-
-    await prisma.student.delete({ where: { id } });
-    return res.json({ message: "Student and all associated data deleted" });
+ 
+    if (!purge.ok) {
+      console.error(`⚠️  Learner ${student.name} deleted, but ${purge.failures.length} artifact(s) failed to purge.`);
+    }
+    return res.json({ deleted: true, counts: manifest.counts, purge });
   } catch (err) {
     console.error("Student delete failed:", err);
-    return res.status(500).json({ error: "Failed to delete student" });
+    if (err.code === "P2003") {
+      return res.status(409).json({
+        error: "A foreign key still blocks this delete. Apply the cascade migration (cas_02) first.",
+        constraint: err.meta?.constraint || err.meta?.field_name || undefined,
+      });
+    }
+    return res.status(500).json({ error: "Failed to delete learner" });
   }
 });
 
