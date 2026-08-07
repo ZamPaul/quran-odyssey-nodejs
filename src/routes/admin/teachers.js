@@ -158,7 +158,7 @@ router.get("/:id/workload", async (req, res) => {
       // Deletable only when NOTHING references them at all.
       canDelete: activeTotal === 0 && historicalTotal === 0,
       reason: historicalTotal > 0
-        ? "This teacher has teaching history. History is never reassigned or deleted — deactivate them instead."
+        ? "This teacher has teaching history. History is never reassigned or deleted, deactivate them instead."
         : activeTotal > 0
           ? "Reassign their active work to another teacher first."
           : null,
