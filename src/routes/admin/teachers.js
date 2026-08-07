@@ -12,9 +12,14 @@ import express from "express";
 import { createClerkClient } from "@clerk/backend";
 import { prisma } from "../../lib/prisma.js";
 import { logAudit } from "../../lib/audit.js";
+import { generatePassword } from "../../lib/password.js";
+
+import { mountCredentialRoutes, findTeacherSubject } from './_credentials.js';
 
 const router = express.Router();
 const clerk = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY });
+
+mountCredentialRoutes(router, { subjectType: 'Teacher', findSubject: findTeacherSubject });
 
 // ═════════════════════════════════════════════════════════
 // GET /api/admin/teachers
@@ -204,11 +209,13 @@ router.post("/", async (req, res) => {
     : specialty
       ? [specialty]
       : [];
-  const genPassword =
-    password ||
-    Math.random().toString(36).slice(2, 10) +
-      "A1!" +
-      Math.random().toString(36).slice(2, 6);
+  // const genPassword =
+  //   password ||
+  //   Math.random().toString(36).slice(2, 10) +
+  //     "A1!" +
+  //     Math.random().toString(36).slice(2, 6);
+
+  const genPassword = password || generatePassword();
 
   try {
     // Guard: calendarId must be unique

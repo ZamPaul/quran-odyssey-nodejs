@@ -1386,3 +1386,136 @@ export async function sendTeacherDutiesReminder({ to, teacherName, unmarkedSessi
 // email.js, this function picks them up automatically — no new import needed.
 // The Islamic greetings can be swapped for neutral ("Hi {name}" / "Thank you")
 // if the teacher base is mixed.
+
+
+// ═══════════════════════════════════════════════════════════
+// Add BOTH senders to src/services/email.js.
+// They route through sendAndLog like every other sender, so they appear in
+// the Communications log and a failed send is visible.
+//
+// NOTE ON `type`: both use the existing 'OTHER' CommType so no enum
+// migration is needed. If you'd rather they filter cleanly in the
+// Communications tab, run the optional SQL at the bottom and swap the
+// type values.
+// ═══════════════════════════════════════════════════════════
+
+// ─── 1. Security notice: an admin changed this person's password ──
+export async function sendPasswordChangedNotice({ to, name, actorEmail, temporaryPassword = null }) {
+  const greeting = name ? `Assalamu alaikum ${name},` : "Assalamu alaikum,";
+
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"/><title>Your password was changed</title></head>
+<body style="margin:0;padding:0;background:#f7f9fb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <div style="max-width:560px;margin:0 auto;padding:32px 16px;">
+    <div style="background:#0d2840;border-radius:16px 16px 0 0;padding:28px 32px;">
+      <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:#28b7d9;margin-bottom:6px;">Quran Odyssey</div>
+      <div style="font-size:22px;font-weight:800;color:#ffffff;">Your password was changed</div>
+    </div>
+    <div style="background:#ffffff;border-radius:0 0 16px 16px;padding:32px;border:1px solid #e2e8f0;border-top:none;">
+      <p style="font-size:15px;color:#0f172a;margin:0 0 16px;">${greeting}</p>
+      <p style="font-size:14px;color:#334155;line-height:1.7;margin:0 0 16px;">
+        The password for your Quran Odyssey account was just changed by our team
+        (${actorEmail}) at your request. You have been signed out on all devices.
+      </p>
+
+      ${temporaryPassword ? `
+      <div style="background:#f7f9fb;border:1px solid #e2e8f0;border-radius:10px;padding:18px;margin-bottom:18px;">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:#94a3b8;margin-bottom:8px;">Your temporary password</div>
+        <div style="font-family:monospace;font-size:18px;font-weight:700;color:#0f172a;letter-spacing:1px;">${temporaryPassword}</div>
+      </div>
+      <p style="font-size:14px;color:#334155;line-height:1.7;margin:0 0 16px;">
+        Please sign in with this password and change it straight away from your account settings.
+      </p>` : `
+      <p style="font-size:14px;color:#334155;line-height:1.7;margin:0 0 16px;">
+        Your new password has been shared with you separately.
+      </p>`}
+
+      <div style="background:#fff8e7;border-radius:10px;padding:16px 18px;border-left:4px solid #faa71a;">
+        <div style="font-size:13px;color:#92400e;line-height:1.6;">
+          <strong>Didn't ask for this?</strong> Please reply to this email immediately so we can secure your account.
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>`;
+
+  return sendAndLog({
+    type: "OTHER",
+    to,
+    subject: "Your Quran Odyssey password was changed",
+    html,
+    from: "Quran Odyssey <bookings@quranodyssey.com>",
+    relatedType: "User",
+  });
+}
+
+// ─── 2. One-time sign-in link ─────────────────────────────
+export async function sendSignInLink({ to, name, url, expiresMinutes = 60 }) {
+  const greeting = name ? `Assalamu alaikum ${name},` : "Assalamu alaikum,";
+
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"/><title>Sign in to Quran Odyssey</title></head>
+<body style="margin:0;padding:0;background:#f7f9fb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <div style="max-width:560px;margin:0 auto;padding:32px 16px;">
+    <div style="background:#0d2840;border-radius:16px 16px 0 0;padding:28px 32px;">
+      <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:#28b7d9;margin-bottom:6px;">Quran Odyssey</div>
+      <div style="font-size:22px;font-weight:800;color:#ffffff;">Sign back in</div>
+    </div>
+    <div style="background:#ffffff;border-radius:0 0 16px 16px;padding:32px;border:1px solid #e2e8f0;border-top:none;">
+      <p style="font-size:15px;color:#0f172a;margin:0 0 16px;">${greeting}</p>
+      <p style="font-size:14px;color:#334155;line-height:1.7;margin:0 0 24px;">
+        We've been asked to help you get back into your account. Use the button below
+        to sign in — you won't need your old password.
+      </p>
+
+      <div style="text-align:center;margin-bottom:24px;">
+        <a href="${url}" style="display:inline-block;background:#28b7d9;color:#ffffff;text-decoration:none;font-size:15px;font-weight:800;padding:14px 32px;border-radius:10px;">
+          Sign in to Quran Odyssey
+        </a>
+      </div>
+
+      <p style="font-size:14px;color:#334155;line-height:1.7;margin:0 0 16px;">
+        Once you're in, you can reset your password by signing out and using "Forgot Password?".
+      </p>
+
+      <div style="background:#fff8e7;border-radius:10px;padding:16px 18px;border-left:4px solid #faa71a;">
+        <div style="font-size:13px;color:#92400e;line-height:1.6;">
+          This link works once and expires in <strong>${expiresMinutes} minutes</strong>.
+          Don't forward it to anyone — it signs in whoever clicks it.
+        </div>
+      </div>
+
+      <p style="font-size:12px;color:#94a3b8;margin-top:20px;border-top:1px solid #e2e8f0;padding-top:16px;">
+        If you didn't ask for this, you can ignore this email — the link will expire on its own.
+      </p>
+    </div>
+  </div>
+</body>
+</html>`;
+
+  return sendAndLog({
+    type: "OTHER",
+    to,
+    subject: "Sign in to Quran Odyssey",
+    html,
+    from: "Quran Odyssey <bookings@quranodyssey.com>",
+    relatedType: "User",
+  });
+}
+
+/* ── OPTIONAL: give these their own type in the Communications log ──
+   Run in Supabase, then change type: "OTHER" above to the new values.
+
+     ALTER TYPE "CommType" ADD VALUE IF NOT EXISTS 'PASSWORD_CHANGED';
+     ALTER TYPE "CommType" ADD VALUE IF NOT EXISTS 'SIGN_IN_LINK';
+
+   Then add them to VALID_TYPES in src/routes/admin/communications.js and to
+   TYPE_LABELS in the communications page so they show a readable name.
+   Postgres commits enum additions separately — run these on their own,
+   not inside a transaction with other statements.
+*/

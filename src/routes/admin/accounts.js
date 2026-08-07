@@ -16,12 +16,16 @@ import { prisma } from "../../lib/prisma.js";
 import { logAudit } from "../../lib/audit.js";
 
 import { collectStudentManifest, collectAccountManifest, purgeArtifacts, manifestForAudit } from '../../services/purge.js';
+import { generatePassword } from "../../lib/password.js";
+import { mountCredentialRoutes, findAccountSubject } from './_credentials.js';
 
 const router = express.Router();
 const clerk = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY });
 
 // Account holders are PARENT or STUDENT (not TEACHER/ADMIN).
 const ACCOUNT_ROLES = ["PARENT", "STUDENT"];
+
+mountCredentialRoutes(router, { subjectType: 'User', findSubject: findAccountSubject });
 
 // ═════════════════════════════════════════════════════════
 // GET /api/admin/accounts
@@ -231,11 +235,13 @@ router.post("/", async (req, res) => {
   }
 
   // Generate a random password if none provided
-  const genPassword =
-    password ||
-    Math.random().toString(36).slice(2, 10) +
-      "A1!" +
-      Math.random().toString(36).slice(2, 6);
+  // const genPassword =
+  //   password ||
+  //   Math.random().toString(36).slice(2, 10) +
+  //     "A1!" +
+  //     Math.random().toString(36).slice(2, 6);
+
+  const genPassword = password || generatePassword();
 
   try {
     // 1) Create the Clerk user
