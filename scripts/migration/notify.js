@@ -68,8 +68,7 @@ function buildHtml({ name, url }) {
       <a href="${url}" style="display:inline-block;background:#28b7d9;color:#ffffff;text-decoration:none;font-size:15px;font-weight:800;padding:14px 32px;border-radius:10px;">Set my new password</a>
     </div>
     <p style="font-size:14px;color:#334155;line-height:1.7;margin:0 0 16px;">
-      The button signs you straight in — you won't need your old password. Once inside,
-      open your account settings and choose a new one.
+      The button signs you straight in — you won't need your old password. Once inside, you can sign out whenever you would like and reset your password using "Forgot password?".
     </p>
     <div style="background:#fff8e7;border-radius:10px;padding:16px 18px;border-left:4px solid #faa71a;">
       <div style="font-size:13px;color:#92400e;line-height:1.6;">
@@ -77,7 +76,7 @@ function buildHtml({ name, url }) {
       </div>
     </div>
     <p style="font-size:12px;color:#94a3b8;margin-top:20px;border-top:1px solid #e2e8f0;padding-top:16px;">
-      Any trouble? Just reply to this email and we'll help you straight away.
+      Any trouble? Contact us and we'll help you straight away.
     </p>
   </div>
 </div></body></html>`;
@@ -122,9 +121,9 @@ const saveProgress = (p) => fs.writeFileSync(PROGRESS, JSON.stringify(p, null, 2
       const result = await sendAndLog({
         type: COMM_TYPE,
         to: u.email,
-        subject: "Action needed: set a new password for Quran Odyssey",
+        subject: "MIGRATION NOTICE! Action needed: set a new password for Quran Odyssey",
         html: buildHtml({ name: u.name, url: token.url }),
-        from: "Quran Odyssey <bookings@quranodyssey.com>",
+        from: "Quran Odyssey <info@quranodyssey.com>",
         relatedType: "User",
         relatedId: u.id,
       });
