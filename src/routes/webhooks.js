@@ -60,24 +60,50 @@ router.post("/clerk", async (req, res) => {
     const rawRole = data.public_metadata?.role || 'PARENT';
     const role    = VALID_ROLES.includes(rawRole) ? rawRole : 'PARENT';
 
+    // try {
+    //   const user = await prisma.user.create({
+    //     data: {
+    //       clerkId: data.id,
+    //       email,
+    //       role
+    //     },
+    //   });
+    //   console.log(`✅ User created in DB: ${user.email} (${user.id}) as ${role}`);
+    //   // NOTE: intentionally NO Student auto-created here.
+    // } catch (err) {
+    //   if (err.code === "P2002") {
+    //     console.log(`⚠️  User already exists in DB, skipping: ${data.id}`);
+    //   } else {
+    //     console.error("❌ Failed to create user in DB:", err);
+    //     return res.status(500).json({ error: "Database error" });
+    //   }
+    // }
+
     try {
-      const user = await prisma.user.create({
-        data: {
-          clerkId: data.id,
-          email,
-          role,
-          // name/phone are filled during onboarding (POST /api/students)
-        },
-      });
-      console.log(`✅ User created in DB: ${user.email} (${user.id}) as ${role}`);
-      // NOTE: intentionally NO Student auto-created here.
-    } catch (err) {
-      if (err.code === "P2002") {
-        console.log(`⚠️  User already exists in DB, skipping: ${data.id}`);
+      // Same email already on file? Adopt the new Clerk identity rather than
+      // failing. This makes the webhook idempotent and self-healing — a user
+      // re-created in Clerk simply re-points at their existing record.
+      const existing = await prisma.user.findUnique({ where: { email } });
+
+      if (existing) {
+        if (existing.clerkId !== data.id) {
+          await prisma.user.update({
+            where: { id: existing.id },
+            data: { clerkId: data.id, ...(role ? { role } : {}) },
+          });
+          console.log(`🔄 Re-linked ${email} → ${data.id} (was ${existing.clerkId})`);
+        } else {
+          console.log(`⏭️  ${email} already linked to ${data.id}`);
+        }
       } else {
-        console.error("❌ Failed to create user in DB:", err);
-        return res.status(500).json({ error: "Database error" });
+        const user = await prisma.user.create({
+          data: { clerkId: data.id, email, role },
+        });
+        console.log(`✅ User created in DB: ${user.email} (${user.id}) as ${role}`);
       }
+    } catch (err) {
+      console.error("❌ Failed to sync user from webhook:", err);
+      return res.status(500).json({ error: "Database error" });
     }
   }
 
@@ -105,18 +131,34 @@ router.post("/clerk", async (req, res) => {
   }
 
   // ─── user.deleted ──────────────────────────────────────
+  // if (type === "user.deleted") {
+  //   try {
+  //     await prisma.user.delete({ where: { clerkId: data.id } });
+  //     console.log(`✅ User deleted from DB: ${data.id}`);
+  //     // Student rows + their learning data cascade-delete via
+  //     // onDelete: Cascade on Student.accountId.
+  //   } catch (err) {
+  //     if (err.code === "P2025") {
+  //       console.log(`⚠️  User not found in DB for deletion: ${data.id}`);
+  //     } else {
+  //       console.error("❌ Failed to delete user:", err);
+  //     }
+  //   }
+  // }
+
   if (type === "user.deleted") {
-    try {
-      await prisma.user.delete({ where: { clerkId: data.id } });
-      console.log(`✅ User deleted from DB: ${data.id}`);
-      // Student rows + their learning data cascade-delete via
-      // onDelete: Cascade on Student.accountId.
-    } catch (err) {
-      if (err.code === "P2025") {
-        console.log(`⚠️  User not found in DB for deletion: ${data.id}`);
-      } else {
-        console.error("❌ Failed to delete user:", err);
-      }
+    const existing = await prisma.user.findUnique({
+      where: { clerkId: data.id },
+      select: { id: true, email: true, _count: { select: { managedStudents: true } } },
+    });
+    if (existing) {
+      // Deliberately NOT deleting. A dashboard click must not silently destroy
+      // a family's entire record — use the admin panel, which confirms the
+      // impact, cleans up files and calendar events, and writes an audit entry.
+      console.error(
+        `🚨 Clerk user.deleted for ${existing.email} (${existing._count.managedStudents} learner(s)). ` +
+        `DB record intentionally left intact. Delete via the admin panel if this was intended.`
+      );
     }
   }
 
