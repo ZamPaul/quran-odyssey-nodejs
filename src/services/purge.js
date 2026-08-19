@@ -149,7 +149,7 @@ export async function collectAccountManifest(userId) {
       calendarEvents: calendarEvents.length,
     },
   };
-}
+}                     
 
 // ─────────────────────────────────────────────────────────
 // Purge the external artifacts. Best-effort: every failure is collected and

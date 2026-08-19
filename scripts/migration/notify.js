@@ -61,18 +61,18 @@ function buildHtml({ name, url }) {
     <p style="font-size:15px;color:#0f172a;margin:0 0 16px;">${greeting}</p>
     <p style="font-size:14px;color:#334155;line-height:1.7;margin:0 0 24px;">
       We've upgraded the security of the Quran Odyssey platform. Everything about your
-      account is unchanged — your classes, your teacher and your children's progress are
+      account is unchanged, your classes, your teacher and your children's progress are
       exactly as they were. The one thing we need you to do is set a new password.
     </p>
     <div style="text-align:center;margin-bottom:24px;">
       <a href="${url}" style="display:inline-block;background:#28b7d9;color:#ffffff;text-decoration:none;font-size:15px;font-weight:800;padding:14px 32px;border-radius:10px;">Set my new password</a>
     </div>
     <p style="font-size:14px;color:#334155;line-height:1.7;margin:0 0 16px;">
-      The button signs you straight in — you won't need your old password. Once inside, you can sign out whenever you would like and reset your password using "Forgot password?".
+      The button signs you straight in, you won't need your old password. Once inside, you can sign out whenever you would like and reset your password using "Forgot password?".
     </p>
     <div style="background:#fff8e7;border-radius:10px;padding:16px 18px;border-left:4px solid #faa71a;">
       <div style="font-size:13px;color:#92400e;line-height:1.6;">
-        This link works once and expires in 7 days. Please don't forward it — it signs in whoever clicks it.
+        This link works once and expires in 7 days. Please don't forward it, it signs in whoever clicks it.
       </div>
     </div>
     <p style="font-size:12px;color:#94a3b8;margin-top:20px;border-top:1px solid #e2e8f0;padding-top:16px;">

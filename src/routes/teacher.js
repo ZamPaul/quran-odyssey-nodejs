@@ -13,6 +13,7 @@ import {
   requireStr,
   cleanInt,
   cleanFutureDate,
+  cleanDeadline,
   requireEnum,
   optionalEnum,
   collect,
@@ -675,12 +676,13 @@ router.post('/assignments', writeLimiter, async (req, res) => {
 
   // Validation
   const errors = [];
-  const studentId   = collect(errors, requireStr(req.body.studentId,  'studentId',  50));
-  const title       = collect(errors, requireStr(req.body.title,       'title',      200));
+  const studentId   = collect(errors, requireStr(req.body.studentId,  'studentId',  50,  'A student'));
+  const title       = collect(errors, requireStr(req.body.title,       'title',      200, 'Title'));
   const courseType  = collect(errors, requireEnum(req.body.courseType, [
     'NOORANI_QAIDA','QURAN_RECITATION','TAJWEED','HIFZ','ISLAMIC_STUDIES','ONE_TO_ONE'
-  ], 'courseType'));
-  const dueDate     = collect(errors, cleanFutureDate(req.body.dueDate, 'dueDate'));
+  ], 'courseType', 'Course'));
+  // cleanDeadline (not cleanFutureDate): a deadline LATER TODAY is valid.
+  const dueDate     = collect(errors, cleanDeadline(req.body.dueDate, 'Due date'));
   const description = cleanStr(req.body.description, 1000);
   const enrollmentId = cleanStr(req.body.enrollmentId, 50);
   // if (!studentId)  errors.push('studentId is required');
@@ -712,18 +714,24 @@ router.post('/assignments', writeLimiter, async (req, res) => {
     });
 
     // handling duplicate heree
-    const duplicate = await prisma.assignment.findFirst({
-      where: { teacherId: req.teacher.id, studentId, title },
-    });
+    // const duplicate = await prisma.assignment.findFirst({
+    //   where: { teacherId: req.teacher.id, studentId, title },
+    // });
 
-    if (duplicate) return res.status(409).json({
-      error: `An assignment titled "${title}" already exists for this student`,
-      assignmentId: duplicate.id,
-    });
+    // if (duplicate) return res.status(409).json({
+    //   error: `An assignment titled "${title}" already exists for this student`,
+    //   assignmentId: duplicate.id,
+    // });
+
+    // if (!enrollment) {
+    //   return res.status(404).json({
+    //     error: 'Student not found or not actively enrolled with you',
+    //   });
+    // }
 
     if (!enrollment) {
       return res.status(404).json({
-        error: 'Student not found or not actively enrolled with you',
+        error: 'This student is not currently enrolled with you. If you\'ve just been assigned them, refresh the page and try again.',
       });
     }
 
@@ -830,8 +838,14 @@ router.patch('/assignments/:id', writeLimiter, async (req, res) => {
   const status      = req.body.status;
   let   dueDate;
  
+  // if (req.body.dueDate !== undefined) {
+  //   const result = cleanFutureDate(req.body.dueDate, 'dueDate');
+  //   if (result.error) return res.status(400).json({ error: result.error });
+  //   dueDate = result.value;
+  // }
+
   if (req.body.dueDate !== undefined) {
-    const result = cleanFutureDate(req.body.dueDate, 'dueDate');
+    const result = cleanDeadline(req.body.dueDate, 'Due date');
     if (result.error) return res.status(400).json({ error: result.error });
     dueDate = result.value;
   }
@@ -845,8 +859,12 @@ router.patch('/assignments/:id', writeLimiter, async (req, res) => {
  
   const hasAttachmentChange = attachmentUrl !== undefined || removeAttachment;
  
+  // if (title === undefined && description === undefined && dueDate === undefined && !status && !hasAttachmentChange) {
+  //   return res.status(400).json({ error: 'Provide at least one field to update' });
+  // }
+
   if (title === undefined && description === undefined && dueDate === undefined && !status && !hasAttachmentChange) {
-    return res.status(400).json({ error: 'Provide at least one field to update' });
+    return res.status(400).json({ error: 'Nothing to save — change at least one field first.' });
   }
  
   const validStatuses = ['PENDING', 'OVERDUE'];

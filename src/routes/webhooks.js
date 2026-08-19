@@ -155,6 +155,7 @@ router.post("/clerk", async (req, res) => {
       // Deliberately NOT deleting. A dashboard click must not silently destroy
       // a family's entire record — use the admin panel, which confirms the
       // impact, cleans up files and calendar events, and writes an audit entry.
+      console.log("🚨 Deliberately NOT deleting. DB record intentionally left intact")
       console.error(
         `🚨 Clerk user.deleted for ${existing.email} (${existing._count.managedStudents} learner(s)). ` +
         `DB record intentionally left intact. Delete via the admin panel if this was intended.`
