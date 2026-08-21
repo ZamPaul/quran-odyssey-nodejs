@@ -222,10 +222,10 @@ router.post("/", async (req, res) => {
     const calClash = await prisma.teacher.findUnique({
       where: { calendarId: calendarId.trim() },
     });
-    if (calClash)
-      return res
-        .status(409)
-        .json({ error: "That calendar ID is already used by another teacher" });
+    // if (calClash)
+    //   return res
+    //     .status(409)
+    //     .json({ error: "That calendar ID is already used by another teacher" });
 
     // 1) Clerk user
     let clerkUser;
