@@ -1,5 +1,19 @@
 // src/middleware/sanitize.js
 
+/** An optional 0–100 percentage. Returns { value } or { error }. */
+export function cleanPercent(val, label = 'Progress') {
+  if (val === undefined || val === null || val === '') return { value: null };
+  const n = Number(val);
+  if (!Number.isFinite(n)) {
+    return { error: `${label} must be a number between 0 and 100.` };
+  }
+  const rounded = Math.round(n);
+  if (rounded < 0 || rounded > 100) {
+    return { error: `${label} must be between 0 and 100.` };
+  }
+  return { value: rounded };
+}
+
 // ── String helpers ────────────────────────────────────────
 
 export function cleanStr(val, maxLength = 2000) {

@@ -21,7 +21,7 @@ import {
   computeStudentRisk,
   isReportOverdue,
   unmarkedCutoff,
-  OVERDUE_REPORT_DAYS
+  OVERDUE_REPORT_DAYS,
 } from "../../lib/oversight.js";
 import { sendTeacherDutiesReminder } from "../../services/email.js";
 
@@ -54,6 +54,7 @@ router.get("/", async (req, res) => {
       activeEnrollments,
       recentReports,
       attendanceRecords,
+      dormantStudents,
     ] = await Promise.all([
       prisma.teacher.findMany({
         where: { isActive: true },
@@ -97,7 +98,11 @@ router.get("/", async (req, res) => {
 
       // SENT reports in the last 30d → keys of student:teacher that are covered
       prisma.progressReport.findMany({
-        where: { status: "SENT", sentAt: { gte: reportCutoff }, enrollmentId: { not: null } },
+        where: {
+          status: "SENT",
+          sentAt: { gte: reportCutoff },
+          enrollmentId: { not: null },
+        },
         select: { enrollmentId: true },
       }),
 
@@ -108,6 +113,32 @@ router.get("/", async (req, res) => {
           studentId: true,
           status: true,
           session: { select: { scheduledAt: true } },
+        },
+      }),
+
+      // Enrolled 2+ weeks ago, never attended a single class
+      prisma.student.findMany({
+        where: {
+          enrollments: {
+            some: {
+              status: "ACTIVE",
+              startDate: { lt: new Date(Date.now() - 14 * 86400000) },
+            },
+          },
+          attendanceRecords: {
+            none: { status: { in: ["PRESENT", "LATE"] } },
+          },
+        },
+        select: {
+          id: true,
+          name: true,
+          account: { select: { email: true, name: true } },
+          enrollments: {
+            where: { status: "ACTIVE" },
+            select: { startDate: true, teacher: { select: { name: true } } },
+            orderBy: { startDate: "asc" },
+            take: 1,
+          },
         },
       }),
     ]);
@@ -128,7 +159,9 @@ router.get("/", async (req, res) => {
     // const recentReportKeys = new Set(
     //   recentReports.map((r) => `${r.studentId}:${r.teacherId}`),
     // );
-    const recentReportEnrollmentIds = new Set(recentReports.map((r) => r.enrollmentId));
+    const recentReportEnrollmentIds = new Set(
+      recentReports.map((r) => r.enrollmentId),
+    );
 
     const overdueByTeacher = new Map();
     const overdueEnrollments = [];
@@ -161,7 +194,10 @@ router.get("/", async (req, res) => {
           now,
         )
       ) {
-        overdueByTeacher.set(e.teacherId, (overdueByTeacher.get(e.teacherId) || 0) + 1);
+        overdueByTeacher.set(
+          e.teacherId,
+          (overdueByTeacher.get(e.teacherId) || 0) + 1,
+        );
         overdueEnrollments.push(e);
       }
     }
@@ -196,12 +232,10 @@ router.get("/", async (req, res) => {
     const byStudent = new Map();
     for (const a of attendanceRecords) {
       if (!byStudent.has(a.studentId)) byStudent.set(a.studentId, []);
-      byStudent
-        .get(a.studentId)
-        .push({
-          status: a.status,
-          scheduledAt: a.session?.scheduledAt || null,
-        });
+      byStudent.get(a.studentId).push({
+        status: a.status,
+        scheduledAt: a.session?.scheduledAt || null,
+      });
     }
     // Only consider students with an active enrollment (dedupe)
     const activeStudentMap = new Map();
@@ -249,9 +283,27 @@ router.get("/", async (req, res) => {
       totalUngraded: [...ungradedByTeacher.values()].reduce((s, n) => s + n, 0),
       totalOverdueReports: overdueEnrollments.length,
       atRiskStudents: atRiskStudents.length,
+      dormant: dormantStudents.length,
     };
 
-    return res.json({ summary, teacherAccountability, atRiskStudents });
+    return res.json({
+      summary,
+      teacherAccountability,
+      atRiskStudents,
+      dormantStudents: dormantStudents.map((s) => ({
+        id: s.id,
+        name: s.name,
+        accountEmail: s.account?.email,
+        teacher: s.enrollments[0]?.teacher?.name || null,
+        enrolledAt: s.enrollments[0]?.startDate || null,
+        weeksEnrolled: s.enrollments[0]
+          ? Math.floor(
+              (Date.now() - new Date(s.enrollments[0].startDate)) /
+                (7 * 86400000),
+            )
+          : null,
+      })),
+    });
   } catch (err) {
     console.error("Oversight fetch failed:", err);
     return res.status(500).json({ error: "Failed to load oversight data" });
@@ -354,7 +406,11 @@ router.get("/reports", async (req, res) => {
         //   select: { studentId: true, teacherId: true },
         // }),
         prisma.progressReport.findMany({
-          where: { status: "SENT", sentAt: { gte: reportCutoff }, enrollmentId: { not: null } },
+          where: {
+            status: "SENT",
+            sentAt: { gte: reportCutoff },
+            enrollmentId: { not: null },
+          },
           select: { enrollmentId: true },
         }),
       ]);
@@ -403,7 +459,7 @@ router.get("/reports", async (req, res) => {
       //     courseType: e.courseType,
       //     startDate: e.startDate,
       //   }));
-      
+
       return res.json({ overdueEnrollments: overdueList });
     } catch (err) {
       console.error("Oversight overdue reports failed:", err);
@@ -468,13 +524,26 @@ router.post("/remind-teacher", async (req, res) => {
         prisma.assignment.count({ where: { teacherId, status: "SUBMITTED" } }),
         prisma.enrollment.findMany({
           where: { status: "ACTIVE", teacherId },
-          select: { id: true, studentId: true, teacherId: true, startDate: true },
+          select: {
+            id: true,
+            studentId: true,
+            teacherId: true,
+            startDate: true,
+          },
         }),
         // prisma.progressReport.findMany({
         //   where: { status: "SENT", teacherId, sentAt: { gte: reportCutoff } },
         //   select: { studentId: true, teacherId: true },
         // }),
-        prisma.progressReport.findMany({ where: { status: "SENT", teacherId, sentAt: { gte: reportCutoff }, enrollmentId: { not: null } }, select: { enrollmentId: true } }),
+        prisma.progressReport.findMany({
+          where: {
+            status: "SENT",
+            teacherId,
+            sentAt: { gte: reportCutoff },
+            enrollmentId: { not: null },
+          },
+          select: { enrollmentId: true },
+        }),
       ]);
 
     // const keys = new Set(
@@ -485,7 +554,13 @@ router.post("/remind-teacher", async (req, res) => {
     // ).length;
 
     const keys = new Set(recentReports.map((r) => r.enrollmentId));
-    const overdueReports = activeEnrollments.filter((e) => isReportOverdue({ status: "ACTIVE", id: e.id, startDate: e.startDate }, keys, now)).length;
+    const overdueReports = activeEnrollments.filter((e) =>
+      isReportOverdue(
+        { status: "ACTIVE", id: e.id, startDate: e.startDate },
+        keys,
+        now,
+      ),
+    ).length;
 
     if (unmarked === 0 && ungraded === 0 && overdueReports === 0) {
       return res
@@ -501,7 +576,7 @@ router.post("/remind-teacher", async (req, res) => {
         unmarkedSessions: unmarked,
         ungradedSubmissions: ungraded,
         overdueReports,
-        teacherId: teacherId
+        teacherId: teacherId,
       });
     } catch (e) {
       emailError = e.message;
@@ -532,7 +607,7 @@ router.get("/unmarked-sessions", async (req, res) => {
   const { teacherId, studentId } = req.query;
   const now = new Date();
   const cutoff10h = unmarkedCutoff(now);
- 
+
   // SAME filter the accountability count uses: SCHEDULED and >10h past.
   const where = {
     status: "SCHEDULED",
@@ -540,7 +615,7 @@ router.get("/unmarked-sessions", async (req, res) => {
   };
   if (teacherId) where.teacherId = teacherId;
   if (studentId) where.studentId = studentId;
- 
+
   try {
     const sessions = await prisma.classSession.findMany({
       where,

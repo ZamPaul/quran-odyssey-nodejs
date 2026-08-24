@@ -3,19 +3,17 @@
 // Pure computation. No database access, no Prisma import — the route fetches,
 // this module computes. Same pattern as oversight.js and analytics.js.
 //
-// EVERYTHING IS DERIVED from records that already exist (attendance, sessions,
-// submissions, reports). Nothing is stored, so:
-//   • no migration, no backfill
-//   • every existing family sees their real history on day one, not zero
-//   • corrections to attendance self-heal the numbers
-//   • a bug is fixed by deploying a fix, not by repairing rows
+// EVERYTHING IS DERIVED from records that already exist. Nothing is stored, so
+// there is no migration, no backfill, and every existing family sees their real
+// history the day this ships rather than starting from zero.
 //
-// NOTE ON AUDIENCE: parents and children share one login and one dashboard.
-// This module returns NUMBERS ONLY — never copy. The UI chooses whether to say
-// "You attended 12 in a row" or "Zayd attended 12 in a row".
+// AUDIENCE: parents and children share one login. This module returns NUMBERS
+// ONLY, never copy — the UI decides whether to say "You" or "Zayd".
+//
+// ── TUNED against live data, 20 Aug 2026 (see gam_05_REAL_DATA_FINDINGS.md) ──
 
 // ═══════════════════════════════════════════════════════════
-// TUNING — every value that defines the economy lives here.
+// TUNING — the whole economy lives in this block.
 // ═══════════════════════════════════════════════════════════
 
 export const XP = {
@@ -27,41 +25,52 @@ export const XP = {
   COURSE_COMPLETED: 100,
 };
 
-// Effort is weighted above outcome on purpose: a consistent but struggling
-// child should be able to out-earn a gifted but erratic one. That is the right
-// incentive for religious study.
+// Effort is weighted above outcome deliberately: a consistent but struggling
+// child should be able to out-earn a gifted but erratic one.
 
 export const STREAK = {
   // EXCUSED never breaks a streak. A child ill for a week, or away for Eid,
-  // must not lose months of built-up progress. The data already distinguishes
-  // this — use it.
+  // must not lose months of progress. The data already distinguishes this.
   CONTINUES: ["PRESENT", "LATE"],
   BREAKS: ["ABSENT"],
   IGNORED: ["EXCUSED"],
 };
 
-// Cumulative XP thresholds. An engaged student attending twice weekly and doing
-// homework earns roughly 40–50 XP/week, so these pace at a few weeks per level
-// early on, stretching later.
-//
-// ⚠️ The Arabic names are the classical stages of learning and are pending
-// confirmation by the client (see Phase 0 decisions). Swap `name`/`arabic`
-// freely — nothing else depends on them.
+// A student who has never attended is DORMANT rather than NEW once their
+// enrolment is this old. Two different situations, two different messages —
+// and dormancy is a churn signal worth surfacing to admins.
+export const DORMANT_AFTER_WEEKS = 2;
+
+/**
+ * ⚠️ PLACEHOLDER NAMES — pending client confirmation.
+ *
+ * The client approved the *approach* (traditional stages of learning) but has
+ * not yet confirmed these eight specific terms. They must not ship unverified.
+ * When the confirmed list arrives, replace `name`/`arabic` here and nothing
+ * else changes.
+ *
+ * Thresholds were compressed after testing against live data: the original
+ * curve was paced for a year of history, and the platform is ten weeks old, so
+ * every student sat at L1–L3 and the ladder looked flat. These spread the
+ * current cohort across L1–L4 with a visible next step for everyone.
+ */
 export const LEVELS = [
   { level: 1, minXp: 0, name: "Beginner", arabic: "Mubtadi'" },
-  { level: 2, minXp: 120, name: "Learner", arabic: "Mutaʿallim" },
-  { level: 3, minXp: 320, name: "Steady", arabic: "Muthābir" },
-  { level: 4, minXp: 640, name: "Intermediate", arabic: "Mutawassit" },
-  { level: 5, minXp: 1100, name: "Dedicated", arabic: "Mujtahid" },
-  { level: 6, minXp: 1750, name: "Advanced", arabic: "Mutaqaddim" },
-  { level: 7, minXp: 2600, name: "Accomplished", arabic: "Mutqin" },
-  { level: 8, minXp: 3800, name: "Master", arabic: "Ḥāfiẓ" },
+  { level: 2, minXp: 80, name: "Learner", arabic: "Muta'allim" },
+  { level: 3, minXp: 200, name: "Steady", arabic: "Muthābir" },
+  { level: 4, minXp: 380, name: "Intermediate", arabic: "Mutawassit" },
+  { level: 5, minXp: 650, name: "Dedicated", arabic: "Mujtahid" },
+  { level: 6, minXp: 1050, name: "Advanced", arabic: "Mutaqaddim" },
+  { level: 7, minXp: 1600, name: "Accomplished", arabic: "Mutqin" },
+  { level: 8, minXp: 2400, name: "Master", arabic: "Ḥāfiẓ" },
 ];
 
+export const LEVEL_NAMES_CONFIRMED = false; // flip to true once signed off
+
 export const PROGRESS_BASIS = {
-  ATTENDANCE: "attendance", // sessions attended vs expected — honest, but measures attendance
-  TEACHER_SET: "teacher", // teacher-supplied percent — needs a schema field
-  CURRICULUM: "curriculum", // real lesson position — needs a curriculum model
+  TEACHER: "teacher", // ← client decision, 2026: the teacher sets it
+  ATTENDANCE: "attendance", // honest fallback, but reads low — see findings
+  CURRICULUM: "curriculum", // needs a curriculum model; not built
 };
 
 // ═══════════════════════════════════════════════════════════
@@ -69,29 +78,24 @@ export const PROGRESS_BASIS = {
 // ═══════════════════════════════════════════════════════════
 
 const DAY = 86400000;
+const WEEK = 7 * DAY;
 const toTime = (d) => (d ? new Date(d).getTime() : 0);
 const monthKey = (d) => {
   const x = new Date(d);
   return `${x.getUTCFullYear()}-${String(x.getUTCMonth() + 1).padStart(2, "0")}`;
 };
+const iso = (t) => (t ? new Date(t).toISOString() : null);
 
 /**
  * Normalise raw rows into the shape every function below expects.
  * Tolerant of missing relations so a partially-loaded student never throws.
- *
- * @param {Object} raw
- *   attendance  [{ status, markedAt, session: { scheduledAt } }]
- *   sessions    [{ status, scheduledAt }]
- *   assignments [{ dueDate, submission: { submittedAt } | null }]
- *   reports     [{ status, overallRating, sentAt }]
- *   enrollments [{ startDate, status, sessionsPerWeek, courseType, progressPercent? }]
  */
 export function normalizeActivity(raw = {}) {
   const attendance = (raw.attendance || [])
     .map((a) => ({
       status: a.status,
-      // Order by when the LESSON happened, not when the teacher got round to
-      // marking it. Marking late must not reorder a child's history.
+      // Ordered by when the LESSON happened, not when the teacher marked it.
+      // Marking late must never reorder a child's history.
       at: toTime(a.session?.scheduledAt || a.markedAt),
     }))
     .filter((a) => a.at > 0)
@@ -115,30 +119,70 @@ export function normalizeActivity(raw = {}) {
 
   const reports = (raw.reports || [])
     .filter((r) => r.status === "SENT")
-    .map((r) => ({ rating: r.overallRating ?? null, at: toTime(r.sentAt) }));
+    .map((r) => ({
+      rating: r.overallRating ?? null,
+      percent: r.progressPercent ?? null, // ← teacher-set course progress
+      at: toTime(r.sentAt),
+    }))
+    .sort((x, y) => x.at - y.at);
 
   const enrollments = (raw.enrollments || []).map((e) => ({
     startDate: toTime(e.startDate),
     status: e.status,
     sessionsPerWeek: e.sessionsPerWeek || 2,
     courseType: e.courseType,
-    progressPercent: e.progressPercent ?? null,
   }));
 
   return { attendance, sessions, assignments, reports, enrollments };
 }
 
+/**
+ * Every XP-earning event, in chronological order. Powers the journey map's
+ * "when did they reach each stage" calculation.
+ *
+ * Course-completion XP is timestamped at the enrolment start date — Enrollment
+ * has no completedAt column, so this is the best approximation available. It
+ * only affects the displayed date of a past milestone, never a total.
+ */
+export function buildXpTimeline(activity) {
+  const events = [];
+  for (const a of activity.attendance) {
+    if (a.status === "PRESENT")
+      events.push({ at: a.at, amount: XP.SESSION_PRESENT, kind: "session" });
+    else if (a.status === "LATE")
+      events.push({ at: a.at, amount: XP.SESSION_LATE, kind: "session" });
+  }
+  for (const a of activity.assignments) {
+    if (a.submitted) {
+      events.push({
+        at: a.submittedAt,
+        amount: a.onTime ? XP.HOMEWORK_ON_TIME : XP.HOMEWORK_LATE,
+        kind: "homework",
+      });
+    }
+  }
+  for (const r of activity.reports) {
+    if (r.rating != null && r.rating >= 4)
+      events.push({ at: r.at, amount: XP.STRONG_REPORT, kind: "report" });
+  }
+  for (const e of activity.enrollments) {
+    if (e.status === "COMPLETED")
+      events.push({
+        at: e.startDate,
+        amount: XP.COURSE_COMPLETED,
+        kind: "course",
+      });
+  }
+  return events.sort((a, b) => a.at - b.at);
+}
+
 // ═══════════════════════════════════════════════════════════
 // STREAK — measured in SESSIONS, never days
 // ═══════════════════════════════════════════════════════════
-//
-// Students attend 2–3 times a week. A day-streak would break every single day
-// by design and be actively demoralising. Count consecutive attended sessions.
 
 export function computeStreak(attendance = []) {
   const relevant = attendance.filter((a) => !STREAK.IGNORED.includes(a.status));
 
-  let current = 0;
   let best = 0;
   let run = 0;
   let lastAttendedAt = null;
@@ -152,17 +196,14 @@ export function computeStreak(attendance = []) {
       run = 0;
     }
   }
-  current = run; // the run still open at the end of the history
 
   return {
-    current,
+    current: run,
     best,
-    lastAttendedAt: lastAttendedAt
-      ? new Date(lastAttendedAt).toISOString()
-      : null,
-    // True when the child is currently on their best-ever run — the moment
-    // worth celebrating rather than just reporting.
-    isPersonalBest: current > 0 && current >= best,
+    lastAttendedAt: iso(lastAttendedAt),
+    // On their best-ever run right now — the moment worth celebrating rather
+    // than merely reporting.
+    isPersonalBest: run > 0 && run >= best,
   };
 }
 
@@ -172,37 +213,27 @@ export function computeStreak(attendance = []) {
 
 export function computeXp(activity, { now = Date.now() } = {}) {
   const { attendance, assignments, reports, enrollments } = activity;
-
-  const breakdown = {
-    sessions: 0,
-    homework: 0,
-    reports: 0,
-    courses: 0,
-  };
+  const breakdown = { sessions: 0, homework: 0, reports: 0, courses: 0 };
 
   for (const a of attendance) {
     if (a.status === "PRESENT") breakdown.sessions += XP.SESSION_PRESENT;
     else if (a.status === "LATE") breakdown.sessions += XP.SESSION_LATE;
   }
-
   for (const a of assignments) {
-    if (!a.submitted) continue;
-    breakdown.homework += a.onTime ? XP.HOMEWORK_ON_TIME : XP.HOMEWORK_LATE;
+    if (a.submitted)
+      breakdown.homework += a.onTime ? XP.HOMEWORK_ON_TIME : XP.HOMEWORK_LATE;
   }
-
   for (const r of reports) {
     if (r.rating != null && r.rating >= 4)
       breakdown.reports += XP.STRONG_REPORT;
   }
-
   for (const e of enrollments) {
     if (e.status === "COMPLETED") breakdown.courses += XP.COURSE_COMPLETED;
   }
 
   const total = Object.values(breakdown).reduce((s, n) => s + n, 0);
 
-  // Last 7 days — drives the "earned this week" line.
-  const weekAgo = now - 7 * DAY;
+  const weekAgo = now - WEEK;
   let thisWeek = 0;
   for (const a of attendance) {
     if (a.at < weekAgo) continue;
@@ -243,12 +274,20 @@ export function computeLevel(totalXp = 0) {
         : 100,
     isMax: !next,
     nextName: next ? next.name : null,
+    nextArabic: next ? next.arabic : null,
   };
 }
 
 // ═══════════════════════════════════════════════════════════
-// BADGES — every one derived, so they award retroactively
+// BADGES — derived, so they award retroactively
 // ═══════════════════════════════════════════════════════════
+//
+// Two targets were raised after live testing: "Praised" and "Perfect Month"
+// were each earned by ~90% of active students, which makes them wallpaper
+// rather than achievements. "Homework Hero" was lowered from 10 to 3 because
+// only 5% of assignments are ever submitted, leaving it unreachable by anyone.
+
+export const PERFECT_MONTH_MIN_SESSIONS = 4;
 
 export const BADGES = [
   {
@@ -284,19 +323,19 @@ export const BADGES = [
   {
     key: "homework_hero",
     name: "Homework Hero",
-    description: "10 assignments handed in on time",
+    description: "3 assignments handed in on time",
     icon: "📚",
   },
   {
     key: "perfect_month",
     name: "Perfect Month",
-    description: "A full month with no missed classes",
+    description: "A full month of classes, none missed",
     icon: "🏅",
   },
   {
     key: "praised",
     name: "Praised",
-    description: "A top mark from your teacher",
+    description: "Three top marks from your teacher",
     icon: "🌟",
   },
   {
@@ -309,10 +348,8 @@ export const BADGES = [
 
 const BADGE_BY_KEY = Object.fromEntries(BADGES.map((b) => [b.key, b]));
 
-/**
- * Returns EVERY badge with its progress, earned or not — so the UI can show
- * "3 of 4 more classes to go", which motivates far better than a locked icon.
- */
+/** Returns EVERY badge with progress, earned or not, so the UI can show
+ *  "2 more classes to go" — far more motivating than a locked icon. */
 export function computeBadges(activity) {
   const { attendance, assignments, reports, enrollments } = activity;
   const streak = computeStreak(attendance);
@@ -321,12 +358,12 @@ export function computeBadges(activity) {
     STREAK.CONTINUES.includes(a.status),
   );
   const onTimeHomework = assignments.filter((a) => a.onTime).length;
-  const topRating = reports.some((r) => r.rating === 5);
+  const topRatings = reports.filter((r) => r.rating === 5).length;
   const completedCourses = enrollments.filter(
     (e) => e.status === "COMPLETED",
   ).length;
 
-  // Longest run of consecutive PRESENT (excludes LATE) — for "Always On Time"
+  // Longest run of consecutive PRESENT (LATE breaks it) — "Always On Time"
   let punctualRun = 0,
     bestPunctual = 0;
   for (const a of attendance) {
@@ -337,7 +374,8 @@ export function computeBadges(activity) {
     } else punctualRun = 0;
   }
 
-  // A calendar month with at least one session and no ABSENT
+  // A calendar month with at least PERFECT_MONTH_MIN_SESSIONS and no ABSENT.
+  // The minimum is what stops a two-lesson month qualifying as "perfect".
   const byMonth = new Map();
   for (const a of attendance) {
     const k = monthKey(a.at);
@@ -347,7 +385,11 @@ export function computeBadges(activity) {
   let perfectMonths = 0;
   for (const [, statuses] of byMonth) {
     const counted = statuses.filter((s) => s !== "EXCUSED");
-    if (counted.length > 0 && !counted.includes("ABSENT")) perfectMonths += 1;
+    if (
+      counted.length >= PERFECT_MONTH_MIN_SESSIONS &&
+      !counted.includes("ABSENT")
+    )
+      perfectMonths += 1;
   }
 
   const defs = [
@@ -356,9 +398,9 @@ export function computeBadges(activity) {
     { key: "devoted", value: attended.length, target: 50 },
     { key: "centurion", value: attended.length, target: 100 },
     { key: "always_on_time", value: bestPunctual, target: 20 },
-    { key: "homework_hero", value: onTimeHomework, target: 10 },
+    { key: "homework_hero", value: onTimeHomework, target: 3 },
     { key: "perfect_month", value: perfectMonths, target: 1 },
-    { key: "praised", value: topRating ? 1 : 0, target: 1 },
+    { key: "praised", value: topRatings, target: 3 },
     { key: "course_complete", value: completedCourses, target: 1 },
   ];
 
@@ -377,43 +419,41 @@ export function computeBadges(activity) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// PROGRESS
+// PROGRESS — teacher-set (client decision)
 // ═══════════════════════════════════════════════════════════
-//
-// ⚠️ There is no curriculum position in the schema — nothing records "lesson 12
-// of 40" or "Juz 3 of 30". All three bases are implemented so the Phase 0
-// decision does not block anything. `basis` and `label` are returned so the UI
-// can never present attendance as if it were course completion.
 
 export function computeProgress(
   activity,
-  { basis = PROGRESS_BASIS.ATTENDANCE, now = Date.now() } = {},
+  { basis = PROGRESS_BASIS.TEACHER, now = Date.now() } = {},
 ) {
-  const { enrollments, attendance } = activity;
+  const { enrollments, attendance, reports } = activity;
   const active = enrollments.filter((e) => e.status === "ACTIVE");
 
   if (active.length === 0) {
     return { percent: 0, basis, label: "No active course", meaningful: false };
   }
 
-  if (basis === PROGRESS_BASIS.TEACHER_SET) {
-    const withPercent = active.filter((e) => e.progressPercent != null);
+  if (basis === PROGRESS_BASIS.TEACHER) {
+    // Most recent report carrying a percentage wins.
+    const withPercent = reports.filter((r) => r.percent != null);
     if (withPercent.length === 0) {
       return {
         percent: 0,
         basis,
         label: "Awaiting teacher assessment",
         meaningful: false,
+        // The journey map still works — it is XP-driven and always has a value.
+        // The UI should lead with the journey and treat this as secondary.
+        awaitingTeacher: true,
       };
     }
-    const avg =
-      withPercent.reduce((s, e) => s + e.progressPercent, 0) /
-      withPercent.length;
+    const latest = withPercent[withPercent.length - 1];
     return {
-      percent: Math.round(avg),
+      percent: Math.max(0, Math.min(latest.percent, 100)),
       basis,
       label: "Course progress",
       meaningful: true,
+      assessedAt: iso(latest.at),
     };
   }
 
@@ -426,10 +466,10 @@ export function computeProgress(
     };
   }
 
-  // ATTENDANCE basis — attended vs expected since the course began.
-  // Labelled "Attendance this course", never "Course progress".
+  // ATTENDANCE fallback. Reads LOW in practice because sessionsPerWeek exceeds
+  // sessions actually scheduled — never present this as "course progress".
   const earliest = Math.min(...active.map((e) => e.startDate));
-  const weeks = Math.max((now - earliest) / (7 * DAY), 0);
+  const weeks = Math.max((now - earliest) / WEEK, 0);
   const perWeek = active.reduce((s, e) => s + e.sessionsPerWeek, 0);
   const expected = Math.round(weeks * perWeek);
   const attended = attendance.filter((a) =>
@@ -450,9 +490,142 @@ export function computeProgress(
     percent: Math.min(Math.round((attended / expected) * 100), 100),
     basis,
     label: "Attendance this course",
-    meaningful: expected >= 4, // fewer than 4 expected sessions is noise
+    meaningful: expected >= 4,
     attended,
     expected,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════
+// JOURNEY MAP  ·  "Quran Odyssey" — the brand is a journey
+// ═══════════════════════════════════════════════════════════
+//
+// The visual spine of the new dashboard: a path winding through the eight
+// stages. Each attended session moves the marker; each stage is a landmark.
+//
+// Why this and not just a progress ring:
+//   • The teacher-set percentage updates MONTHLY — static and dull between
+//     reports. The journey moves EVERY session.
+//   • It gives fast feedback (steps) and slow prestige (landmarks) at once.
+//   • It is XP-driven, so it always has a value, even before any teacher
+//     assessment exists.
+
+export function computeJourney(activity, { now = Date.now() } = {}) {
+  const timeline = buildXpTimeline(activity);
+  const totalXp = timeline.reduce((s, e) => s + e.amount, 0);
+  const level = computeLevel(totalXp);
+
+  // When was each stage first reached? Walk the timeline accumulating XP.
+  const reachedAt = {};
+  let running = 0;
+  for (const e of timeline) {
+    const before = running;
+    running += e.amount;
+    for (const l of LEVELS) {
+      if (before < l.minXp && running >= l.minXp) reachedAt[l.level] = e.at;
+    }
+  }
+  reachedAt[1] = reachedAt[1] ?? timeline[0]?.at ?? null;
+
+  const stages = LEVELS.map((l) => ({
+    level: l.level,
+    name: l.name,
+    arabic: l.arabic,
+    minXp: l.minXp,
+    state:
+      l.level < level.level
+        ? "complete"
+        : l.level === level.level
+          ? "current"
+          : "locked",
+    reachedAt: iso(reachedAt[l.level] ?? null),
+  }));
+
+  const currentStage = stages.find((s) => s.state === "current");
+  const nextStage = stages.find((s) => s.level === level.level + 1) || null;
+
+  // Steps taken = attended sessions. Each is a node on the path.
+  const attended = activity.attendance.filter((a) =>
+    STREAK.CONTINUES.includes(a.status),
+  );
+  const totalSteps = attended.length;
+
+  // Steps taken since entering the current stage — used to draw the segment
+  // between the last landmark and the marker.
+  const stageStartAt = reachedAt[level.level] ?? null;
+  const stepsInStage = stageStartAt
+    ? attended.filter((a) => a.at >= stageStartAt).length
+    : totalSteps;
+
+  // "About 4 more classes to reach Mutawassit" — concrete and motivating.
+  // Uses this student's own recent earning rate, not a global average.
+  const recent = timeline.filter((e) => e.at >= now - 28 * DAY);
+  const recentSessions = recent.filter((e) => e.kind === "session").length;
+  const xpPerSession =
+    recentSessions > 0
+      ? recent.reduce((s, e) => s + e.amount, 0) / recentSessions
+      : XP.SESSION_PRESENT;
+  const sessionsToNext = nextStage
+    ? Math.max(Math.ceil(level.xpToNext / Math.max(xpPerSession, 1)), 1)
+    : 0;
+
+  // The last few steps, newest last — for animating the marker's arrival.
+  const recentSteps = attended.slice(-8).map((a) => ({
+    at: iso(a.at),
+    status: a.status,
+  }));
+
+  // The nearest thing worth celebrating: next stage, or the closest badge.
+  const badges = computeBadges(activity);
+  const nearestBadge =
+    badges.filter((b) => !b.earned).sort((a, b) => b.percent - a.percent)[0] ||
+    null;
+
+  let nextMilestone = null;
+  if (nextStage && sessionsToNext <= 4) {
+    nextMilestone = {
+      type: "stage",
+      label: nextStage.name,
+      arabic: nextStage.arabic,
+      remaining: sessionsToNext,
+      unit: "classes",
+    };
+  } else if (nearestBadge) {
+    nextMilestone = {
+      type: "badge",
+      label: nearestBadge.name,
+      icon: nearestBadge.icon,
+      remaining: nearestBadge.remaining,
+      unit: nearestBadge.key === "homework_hero" ? "assignments" : "classes",
+    };
+  } else if (nextStage) {
+    nextMilestone = {
+      type: "stage",
+      label: nextStage.name,
+      arabic: nextStage.arabic,
+      remaining: sessionsToNext,
+      unit: "classes",
+    };
+  }
+
+  return {
+    stages,
+    currentStage,
+    nextStage,
+    // 0–100 within the current stage — drives the path segment fill.
+    percentThroughStage: level.percentToNext,
+    // 0–100 along the entire journey — drives the zoomed-out overview.
+    percentOfJourney: Math.min(
+      Math.round((totalXp / LEVELS[LEVELS.length - 1].minXp) * 100),
+      100,
+    ),
+    totalSteps,
+    stepsInStage,
+    recentSteps,
+    sessionsToNext,
+    nextMilestone,
+    startedAt: iso(timeline[0]?.at ?? null),
+    namesConfirmed: LEVEL_NAMES_CONFIRMED,
   };
 }
 
@@ -461,37 +634,50 @@ export function computeProgress(
 // ═══════════════════════════════════════════════════════════
 
 export function computeGamification(raw, options = {}) {
+  const { now = Date.now() } = options;
   const activity = normalizeActivity(raw);
+
   const streak = computeStreak(activity.attendance);
   const xp = computeXp(activity, options);
   const level = computeLevel(xp.total);
   const badges = computeBadges(activity);
   const progress = computeProgress(activity, options);
+  const journey = computeJourney(activity, options);
 
   const attended = activity.attendance.filter((a) =>
     STREAK.CONTINUES.includes(a.status),
   ).length;
   const earned = badges.filter((b) => b.earned);
 
-  // The nearest unearned badge — the single most motivating thing to surface.
-  const nextBadge =
-    badges.filter((b) => !b.earned).sort((a, b) => b.percent - a.percent)[0] ||
-    null;
+  // ── New vs dormant ──
+  // A child who signed up three days ago and one who enrolled two months ago
+  // and never started are NOT the same situation. One gets a welcome; the
+  // other needs a nudge — and is a churn signal for the admin panel.
+  const earliestEnrolment = activity.enrollments.length
+    ? Math.min(...activity.enrollments.map((e) => e.startDate))
+    : null;
+  const weeksEnrolled = earliestEnrolment
+    ? (now - earliestEnrolment) / WEEK
+    : 0;
+  const neverAttended = attended === 0 && xp.total === 0;
 
   return {
-    // A brand-new family is NOT an error state. This flag lets the UI show a
-    // welcome rather than a wall of zeros — it is every new customer's first
-    // impression of the feature.
-    isNew: attended === 0 && xp.total === 0,
+    isNew: neverAttended && weeksEnrolled < DORMANT_AFTER_WEEKS,
+    isDormant: neverAttended && weeksEnrolled >= DORMANT_AFTER_WEEKS,
+    weeksEnrolled: Math.floor(weeksEnrolled),
     streak,
     xp,
     level,
     progress,
+    journey,
     badges,
     earnedBadges: earned,
     badgeCount: earned.length,
     badgeTotal: badges.length,
-    nextBadge,
+    nextBadge:
+      badges
+        .filter((b) => !b.earned)
+        .sort((a, b) => b.percent - a.percent)[0] || null,
     totals: {
       sessionsAttended: attended,
       homeworkSubmitted: activity.assignments.filter((a) => a.submitted).length,

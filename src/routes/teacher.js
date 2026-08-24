@@ -17,6 +17,7 @@ import {
   requireEnum,
   optionalEnum,
   collect,
+  cleanPercent
 } from '../middleware/sanitize.js';
 
 import {
@@ -1203,6 +1204,7 @@ router.post('/reports', writeLimiter, async (req, res) => {
   if (errs.length) return res.status(400).json({ error: 'Validation failed', details: errs });
 
   const overallRating   = req.body.overallRating !== undefined ? cleanInt(req.body.overallRating, 1, 5) : null;
+  const progressPercent = collect(errs, cleanPercent(req.body.progressPercent, 'Course progress'));
   const tajweedProgress = cleanStr(req.body.tajweedProgress, 2000);
   const recitationNotes = cleanStr(req.body.recitationNotes, 2000);
   const behaviourNotes  = cleanStr(req.body.behaviourNotes,  2000);
@@ -1249,6 +1251,7 @@ router.post('/reports', writeLimiter, async (req, res) => {
         homeworkNotes,
         teacherMessage,
         nextSteps,
+        progressPercent,
         attachmentUrl: attachmentUrl || null,
         attachmentName: attachmentName || null,
         attachmentType: attachmentType || null,
@@ -1309,6 +1312,12 @@ router.patch('/reports/:id', async (req, res) => {
     if (homeworkNotes   !== undefined) data.homeworkNotes   = homeworkNotes?.trim()   || null;
     if (teacherMessage  !== undefined) data.teacherMessage  = teacherMessage?.trim()  || null;
     if (nextSteps       !== undefined) data.nextSteps       = nextSteps?.trim()       || null;
+
+    if (req.body.progressPercent !== undefined) {
+      const r = cleanPercent(req.body.progressPercent, 'Course progress');
+      if (r.error) return res.status(400).json({ error: r.error });
+      data.progressPercent = r.value;
+    }
  
     // Attachment replace / remove (delete old file from storage)
     const isReplacing = attachmentUrl !== undefined && attachmentUrl;

@@ -473,6 +473,8 @@ model ProgressReport {
   updatedSinceSent Boolean   @default(false)  // edited after being SENT
   lastSentAt       DateTime?                  // most recent (re)send time
 
+  progressPercent Int?   // 0–100, teacher's assessment of course completion
+
   sentAt    DateTime?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt

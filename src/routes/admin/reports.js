@@ -90,7 +90,7 @@ router.get("/", async (req, res) => {
   else if (flag === "delivery-failed") where.id = { in: failedIds || [] };
 
   const select = {
-    id: true, period: true, courseType: true, status: true, overallRating: true,
+    id: true, period: true, courseType: true, status: true, overallRating: true, progressPercent: true,
     updatedSinceSent: true, sentAt: true, lastSentAt: true, createdAt: true,
     attachmentUrl: true, attachmentName: true,
     teacherMessage: true, nextSteps: true,
