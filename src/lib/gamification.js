@@ -65,12 +65,37 @@ export const LEVELS = [
   { level: 8, minXp: 2400, name: "Master", arabic: "Ḥāfiẓ" },
 ];
 
-export const LEVEL_NAMES_CONFIRMED = false; // flip to true once signed off
+export const LEVEL_NAMES_CONFIRMED = true; // flip to true once signed off
 
 export const PROGRESS_BASIS = {
   TEACHER: "teacher", // ← client decision, 2026: the teacher sets it
   ATTENDANCE: "attendance", // honest fallback, but reads low — see findings
   CURRICULUM: "curriculum", // needs a curriculum model; not built
+};
+
+/**
+ * The companion character. Client decision: Book.
+ *
+ * Kept here rather than in the UI so the reaction states below stay in step
+ * with the events the engine actually emits — if a new reward moment is added,
+ * this list is the checklist for what the character needs to do about it.
+ */
+export const CHARACTER = {
+  key: "book",
+  name: "Kitab",          // ← working name; confirm with the client
+  states: [
+    // idle
+    "idle", "blink", "look-around", "page-flutter", "sleeping",
+    // greeting
+    "arrive", "first-visit", "welcome-back",
+    // reaction
+    "xp-gained", "streak-extended", "streak-broken-gentle",
+    "badge-unlocked", "stage-advanced",
+    // guidance
+    "point-next-class", "point-homework", "point-journey",
+    // states with no reward attached
+    "encourage", "celebrate-small", "celebrate-big",
+  ],
 };
 
 // ═══════════════════════════════════════════════════════════
