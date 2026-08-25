@@ -100,7 +100,7 @@ ck('recentSteps capped at 8', j.recentSteps.length<=8);
 ck('recentSteps newest last',
   new Date(j.recentSteps[j.recentSteps.length-1].at) >= new Date(j.recentSteps[0].at));
 ck('nextMilestone present', !!j.nextMilestone);
-ck('names flagged unconfirmed', j.namesConfirmed===false);
+ck('names flagged confirmed (client signed off Phase 1)', j.namesConfirmed===true);
 
 console.log('\n═══ 6. JOURNEY EDGE CASES ═══');
 const jEmpty=computeJourney(normalizeActivity({}),O);
