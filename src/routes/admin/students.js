@@ -171,7 +171,7 @@ router.get("/:id", async (req, res) => {
         progressReports: {
           orderBy: { createdAt: "desc" },
           take: 10,
-          select: { progressPercent: true },
+          // select: { progressPercent: true },
           include: { teacher: { select: { name: true } } },
         },
         attendanceRecords: { select: { status: true } },
