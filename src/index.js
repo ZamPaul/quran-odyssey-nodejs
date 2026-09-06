@@ -39,6 +39,7 @@ if (process.env.NODE_ENV !== 'test') {
 // Allow your Next.js frontend to call this backend
 const allowedOrigins = [
   'http://localhost:3000',
+  'https://local.quranodyssey.com',   // local dev against the PRODUCTION Clerk instance (hosts + HTTPS:443)
   'https://quranodyssey.com',
   'https://www.quranodyssey.com',
   'https://quran-odyssey-nextjs.vercel.app',

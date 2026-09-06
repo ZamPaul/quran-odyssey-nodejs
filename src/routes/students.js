@@ -17,6 +17,7 @@ import { isAccountComplete, hasContactDetails } from '../lib/accountCompleteness
 
 import { deleteStoredFile } from '../lib/storageAdmin.js';
 import { streamReportPdf } from '../lib/reportPdf.js';
+import { computeGamification } from '../lib/gamification.js';
 
 const router = express.Router();
 
@@ -660,6 +661,53 @@ router.delete('/:studentId/assignments/:id/submission', requireAuth, async (req,
   } catch (err) {
     console.error('Submission delete failed:', err);
     return res.status(500).json({ error: 'Failed to delete submission' });
+  }
+});
+
+
+// ──────────────────────────────────────────────────────
+// GET /api/students/:studentId/gamification
+// Derived gamification payload (XP, level, streak, journey,
+// badges) for ONE learner. Pure: computeGamification derives
+// everything from records that already exist — no gamification
+// tables, no migration. Powers the child "Journey" home and the
+// parent progress view.
+// ──────────────────────────────────────────────────────
+router.get('/:studentId/gamification', requireAuth, async (req, res) => {
+  const { studentId } = req.params;
+  if (!ownsStudent(req, studentId)) {
+    return res.status(404).json({ error: 'Learner not found' });
+  }
+
+  try {
+    const [attendance, sessions, assignments, reports, enrollments] = await Promise.all([
+      prisma.attendanceRecord.findMany({
+        where:  { studentId },
+        select: { status: true, markedAt: true, session: { select: { scheduledAt: true } } },
+      }),
+      prisma.classSession.findMany({
+        where:  { studentId },
+        select: { status: true, scheduledAt: true },
+      }),
+      prisma.assignment.findMany({
+        where:  { studentId },
+        select: { dueDate: true, submission: { select: { submittedAt: true } } },
+      }),
+      prisma.progressReport.findMany({
+        where:  { studentId },
+        select: { status: true, overallRating: true, progressPercent: true, sentAt: true },
+      }),
+      prisma.enrollment.findMany({
+        where:  { studentId },
+        select: { startDate: true, status: true, sessionsPerWeek: true, courseType: true },
+      }),
+    ]);
+
+    const gamification = computeGamification({ attendance, sessions, assignments, reports, enrollments });
+    return res.json(gamification);
+  } catch (err) {
+    console.error('Gamification fetch failed:', err);
+    return res.status(500).json({ error: 'Failed to fetch gamification' });
   }
 });
 
